@@ -1,0 +1,11 @@
+#!/bin/bash
+
+~/jdk/build/linux-x86_64-server-release/images/jdk/bin/javac \
+-cp ~/jdk/build/linux-x86_64-server-release/support/test/lib/wb.jar \
+"$1.java" 
+
+~/jdk/build/linux-x86_64-server-release/images/jdk/bin/java \
+-Xbootclasspath/a:$HOME/jdk/build/linux-x86_64-server-release/support/test/lib/wb.jar \
+-XX:+UnlockDiagnosticVMOptions \
+-XX:+WhiteBoxAPI \
+$1 
