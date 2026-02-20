@@ -1254,7 +1254,8 @@ G1CollectedHeap::G1CollectedHeap() :
   _ref_processor_cm(nullptr),
   _is_alive_closure_cm(),
   _is_subject_to_discovery_cm(this),
-  _region_attr() {
+  _region_attr(),
+  _tracker(this) {
 
   _verifier = new G1HeapVerifier(this);
 
@@ -1556,6 +1557,9 @@ jint G1CollectedHeap::initialize() {
   G1InitLogger::print();
 
   FullGCForwarding::initialize(_reserved);
+
+  log_trace(gc_testing)("Init_byte_size: %lu (%lu regions)", init_byte_size, init_byte_size / G1HeapRegion::GrainBytes);
+  _tracker.initialize();
 
   return JNI_OK;
 }
