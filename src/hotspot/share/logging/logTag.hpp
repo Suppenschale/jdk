@@ -88,6 +88,8 @@ class outputStream;
   LOG_TAG(free) \
   LOG_TAG(freelist) \
   LOG_TAG(gc) \
+  LOG_TAG(gc_stats) \
+  LOG_TAG(gc_testing) \
   NOT_PRODUCT(LOG_TAG(generate)) \
   LOG_TAG(handshake) \
   LOG_TAG(hashtables) \
