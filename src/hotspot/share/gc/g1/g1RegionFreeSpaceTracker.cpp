@@ -1,7 +1,7 @@
 
 #include "gc/g1/g1CollectedHeap.inline.hpp"
 #include "gc/g1/g1RegionFreeSpaceTracker.hpp"
-#include "logging/log.hpp"fir 
+#include "logging/log.hpp"
 
 
 G1RegionFreeSpaceTracker::G1RegionFreeSpaceTracker(G1CollectedHeap* heap) :
