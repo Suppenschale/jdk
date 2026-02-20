@@ -495,6 +495,8 @@ void G1FullCollector::phase5_reset_metadata() {
   GCTraceTime(Info, gc, phases) info("Phase 5: Reset Metadata", scope()->timer());
   G1FullGCResetMetadataTask task(this);
   run_task(&task);
+
+  _heap->_tracker.clean_up_holes();
 }
 
 void G1FullCollector::restore_marks() {
