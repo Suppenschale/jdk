@@ -44,6 +44,7 @@
 #include "gc/g1/g1MonotonicArenaFreeMemoryTask.hpp"
 #include "gc/g1/g1MonotonicArenaFreePool.hpp"
 #include "gc/g1/g1NUMA.hpp"
+#include "gc/g1/g1RegionFreeSpaceTracker.hpp"
 #include "gc/g1/g1SurvivorRegions.hpp"
 #include "gc/g1/g1YoungGCAllocationFailureInjector.hpp"
 #include "gc/shared/barrierSet.hpp"
@@ -1065,6 +1066,10 @@ public:
   // the collection set or not. Each of the array's elements denotes whether the
   // corresponding region is in the collection set or not.
   G1HeapRegionAttrBiasedMappedArray _region_attr;
+
+ public:
+
+  G1RegionFreeSpaceTracker _tracker;
 
  public:
 
