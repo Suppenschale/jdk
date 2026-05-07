@@ -280,6 +280,10 @@ HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
                                                                actual_word_size);
   if (result == nullptr && !old_is_full()) {
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
+
+    result = _g1h->_tracker.find_hole_old(min_word_size, 
+                                           desired_word_size, 
+                                           actual_word_size); 
     // Multiple threads may have queued at the FreeList_lock above after checking whether there
     // actually is still memory available. Redo the check under the lock to avoid unnecessary work;
     // the memory may have been used up as the threads waited to acquire the lock.

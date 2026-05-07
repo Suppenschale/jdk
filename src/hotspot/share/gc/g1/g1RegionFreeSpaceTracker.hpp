@@ -32,28 +32,33 @@ class G1RegionFreeSpaceTracker {
         HeapWord* find_hole_old(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
 
         //void remove_hole_humongous(G1HeapRegion* region);
-        void clean_up_holes();
-        void remove_hole(G1HeapRegion* region);
+        void clean_up_holes_young();
+        void clean_up_holes_old();
+        void remove_region(G1HeapRegion* region);
 
         void dump_regions();
         void dump_holes();
         void dump_hole_stats();
 
-        size_t getSize(HeapWord* word) {
-            oop obj = cast_to_oop(word);
-            return obj->size();
+        void set_size(HeapWord* word, size_t size) {
+            int header_size = oopDesc::header_size();
+            *(size_t*)(word + header_size) = size;
         }
 
-        void setNext(HeapWord* word, HeapWord* next) {
-            oop obj = cast_to_oop(word);
-            int header_size = obj->header_size();
-            *(HeapWord**)(word + header_size) = next;
+        size_t get_size(HeapWord* word) {
+            int header_size = oopDesc::header_size();
+            int size = *(size_t*)(word + header_size);
+            return size;
         }
 
-        HeapWord* getNext(HeapWord* word) {
-            oop obj = cast_to_oop(word);
-            int header_size = obj->header_size();
-            return *(HeapWord**)(word + header_size);
+        void set_next(HeapWord* word, HeapWord* next) {
+            int header_size = oopDesc::header_size();
+            *(HeapWord**)(word + header_size + 1) = next;
+        }
+
+        HeapWord* get_next(HeapWord* word) {
+            int header_size = oopDesc::header_size();
+            return *(HeapWord**)(word + header_size + 1);
         }
 
 };

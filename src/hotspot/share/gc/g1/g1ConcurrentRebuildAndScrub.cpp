@@ -170,6 +170,10 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         // Found dead object (which klass has potentially been unloaded). Scrub to next marked object.
         HeapWord* scrub_end = _bitmap->get_next_marked_addr(addr, limit);
         hr->fill_range_with_dead_objects(addr, scrub_end);
+        
+        if (UseNewCode3) {
+          G1CollectedHeap::heap()->_tracker.add_potential_old_hole(hr, addr, pointer_delta(scrub_end, addr));
+        } 
         // Return the next object to handle.
         return scrub_end;
       }

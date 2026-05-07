@@ -83,11 +83,10 @@ inline HeapWord* G1AllocRegion::attempt_allocation_locked(size_t min_word_size,
 inline HeapWord* G1AllocRegion::attempt_allocation_using_new_region(size_t min_word_size,
                                                                     size_t desired_word_size,
                                                                     size_t* actual_word_size) {
-  G1HeapRegion* alloc_region = _alloc_region;                                      
+  G1HeapRegion* alloc_region = _alloc_region;
+  intptr_t top_before = p2i(alloc_region->top());
   size_t waste = retire(true /* fill_up */);
-  if (alloc_region->is_survivor()) {
-    _g1h->_tracker.add_potential_survivor_hole(alloc_region, alloc_region->pre_dummy_top(), waste);
-  }
+  //log_trace(gc_testing)("after  top: %d", p2i(alloc_region->top()) == top_before);
   HeapWord* result = new_alloc_region_and_allocate(desired_word_size);
   if (result != nullptr) {
     *actual_word_size = desired_word_size;

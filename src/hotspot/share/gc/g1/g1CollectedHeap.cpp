@@ -281,6 +281,11 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
   // and the BOT will not be complete.
   hr->set_top(hr->end() - words_not_fillable);
 
+  if (UseNewCode2) {
+    log_trace(gc_testing)("Humgouns region with hole of size: %lu", words_fillable);
+    _tracker.add_potential_humongous_hole(hr, hr->end() - words_fillable, words_fillable);
+  }
+
   assert(hr->bottom() < obj_top && obj_top <= hr->end(),
          "obj_top should be in last region");
 
@@ -2803,6 +2808,8 @@ void G1CollectedHeap::free_region(G1HeapRegion* hr, G1FreeRegionList* free_list)
   // Reset region metadata to allow reuse.
   hr->hr_clear(true /* clear_space */);
   _policy->remset_tracker()->update_at_free(hr);
+
+  _tracker.remove_region(hr);
 
   if (free_list != nullptr) {
     free_list->add_ordered(hr);

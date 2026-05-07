@@ -1,4 +1,5 @@
 
+#include "gc/g1/g1AllocRegion.hpp"
 #include "gc/g1/g1CollectedHeap.inline.hpp"
 #include "gc/g1/g1RegionFreeSpaceTracker.hpp"
 #include "logging/log.hpp"
@@ -21,8 +22,8 @@ G1RegionFreeSpaceTracker::~G1RegionFreeSpaceTracker() {
 void G1RegionFreeSpaceTracker::initialize() {
 
     _size = _g1h->max_num_regions();
-    _min_hole_size_young = _g1h->min_fill_size();
-    _min_hole_size_old  = _g1h->min_fill_size() + 1;
+    _min_hole_size_young = _g1h->min_fill_size() + 2;
+    _min_hole_size_old  = _g1h->min_fill_size() + 2+ 30;
     _holes_young = NEW_C_HEAP_ARRAY(HeapWord*, _size, mtGC);
     _holes_old = NEW_C_HEAP_ARRAY(HeapWord*, _size, mtGC);
     for (uint i = 0; i < _size; i++) {
@@ -37,54 +38,153 @@ void G1RegionFreeSpaceTracker::initialize() {
 void G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size) {
     size_t size_in_words = size / HeapWordSize;
 
-    if (size_in_words < _min_hole_size_young) return;
+    if (size_in_words < _min_hole_size_young) {
+        return;
+    }
 
     _holes_young[region->hrm_index()] = word;
-    oop obj = cast_to_oop(word);
-    size_t size_ = getSize(word);
-    //log_trace(gc_testing)("\tAdd hole (YOUNG) at: " PTR_FORMAT ", size = %7lu", p2i(word), size_);
+    set_size(word, size_in_words);
+    size_t size_ = get_size(word);
+    log_trace(gc_testing)("\tAdd hole (YOUNG) at: " PTR_FORMAT ", size = %7lu", p2i(word), size_);
 }
 
-void G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size) {
-    size_t size_in_words = size / HeapWordSize;
+void G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
 
-    if (size_in_words < _min_hole_size_old) return;
+    if (size_in_words < _min_hole_size_old) {
+        log_trace(gc_testing)("%ld < %ld", size_in_words, _min_hole_size_old);
+        return;
+    }
 
     _holes_old[region->hrm_index()] = word;
-    oop obj = cast_to_oop(word);
-    setNext(word, region->end());
-    size_t size_ = getSize(word);
-    log_trace(gc_testing)("\tAdd hole (OLD) at: " PTR_FORMAT ", size = %7lu", p2i(word), size_);
+    set_size(word, size_in_words);
+    set_next(word, region->end());
+    size_t size_ = get_size(word);
+    HeapWord* next_ = get_next(word);
+    log_trace(gc_testing)("\tAdd hole (OLD) at: " PTR_FORMAT ", size = %7lu, next = " PTR_FORMAT, p2i(word), size_, p2i(next_));
 }
 
-void G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size) {
-    //TODO
+void G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+    
+    if (size_in_words < _min_hole_size_old) {
+        return;
+    }
+
+    HeapWord* head = _holes_old[region->hrm_index()];
+
+    if (head == nullptr) {
+        _holes_old[region->hrm_index()] = word;
+        set_size(word, size_in_words);
+        set_next(word, region->end());
+    } else if (word < head) {
+        _holes_old[region->hrm_index()] = word;
+        set_size(word, size_in_words);
+        set_next(word, head);
+    } else {
+        //Insert after head
+        HeapWord* cur = head;
+        HeapWord* prev = head;
+        while (cur < word) {
+            prev = cur;
+            cur = get_next(cur);
+        }
+        if (cur != word) {
+            set_next(word, get_next(prev));
+            set_next(prev, word);
+            set_size(word, size_in_words);
+        }
+    }
+
+
+
+    /*if (_holes_old[region->hrm_index()] != nullptr) {
+        HeapWord* obj = _holes_old[region->hrm_index()];
+        set_next(word, obj);
+    } else {        
+        set_next(word, region->end());
+    }
+    set_size(word, size_in_words);
+    _holes_old[region->hrm_index()] = word;*/
+    size_t size_ = get_size(word);
+    HeapWord* next_ = get_next(word);
+
+    log_trace(gc_testing)("\tAdd hole (OLD) at: " PTR_FORMAT ", size = %7lu, next = " PTR_FORMAT, p2i(word), size_, p2i(next_));
+
+    HeapWord* cur = _holes_old[region->hrm_index()];
+    next_ = nullptr;
+
+    int i = 0;
+    do {
+        next_ = get_next(cur);
+        log_trace(gc_testing)("\t\tRegion %d Hole %3d: " PTR_FORMAT ", size = %7lu, next = " PTR_FORMAT " (" PTR_FORMAT ")"
+            ,region->hrm_index(), i, p2i(cur), get_size(cur), p2i(next_), p2i(region->end()));
+        i++;
+        cur = next_;
+        if (i > 500) {
+            break;
+        }
+    } while (cur != region->end());
 }
 
 HeapWord* G1RegionFreeSpaceTracker::find_hole_young(size_t min_word_size,
                                                     size_t desired_word_size,
                                                     size_t* actual_word_size) {
 
-    //log_trace(gc_testing)("Find hole (YOUNG) of size %lu", min_word_size);
+    log_trace(gc_testing)("Find hole (YOUNG) of size %lu", desired_word_size);
     for (uint i = 0; i < _size; i++) {
         HeapWord* obj = _holes_young[i];
         if (obj != nullptr) {
-            size_t available = getSize(obj);
+            size_t available = get_size(obj);
             size_t want_to_allocate = MIN2(available, desired_word_size);
+            size_t remaining = available - want_to_allocate;   
 
-            if (want_to_allocate >= min_word_size) {
-                size_t remaining = available - want_to_allocate;                
+            log_trace(gc_testing)("\tHole %d: %ld", i, available);
+
+            if (want_to_allocate >= min_word_size && remaining > _min_hole_size_young) {
+                log_trace(gc_testing)("Hole index : %d", i);             
 
                 HeapWord* dummy = obj + want_to_allocate;
                 
+                log_trace(gc_testing)("obj   (" PTR_FORMAT ")", p2i(obj));
+                log_trace(gc_testing)("dummy (" PTR_FORMAT ")", p2i(dummy));
+                G1HeapRegion* obj_region = _g1h->heap_region_containing(obj);
                 G1HeapRegion* region = _g1h->heap_region_containing(dummy);
+                log_trace(gc_testing)("top: %lu, end: %lu, diff: %lu, size: %lu, rem: %lu",
+                p2i(region->top()), p2i(region->end()), pointer_delta(region->end(), region->top()), want_to_allocate, remaining);
 
+                log_trace(gc_testing)("obj   region: %u", obj_region->hrm_index());
+                log_trace(gc_testing)("dummy region: %u", region->hrm_index());
+
+                region->fill_with_dummy_object(obj, want_to_allocate);
                 region->fill_with_dummy_object(dummy, remaining);
-                region->set_pre_dummy_top(dummy);
+                set_size(dummy, remaining);
+                set_next(dummy, region->end());
+
+                log_trace(gc_testing)("Cast obj");
+                oop o = cast_to_oop(obj);
+                log_trace(gc_testing)("size: %ld", o->size());
+
+                log_trace(gc_testing)("Cast dummy");
+                o = cast_to_oop(dummy);
+                log_trace(gc_testing)("size: %ld", o->size());
 
                 *actual_word_size = want_to_allocate;
-                //log_trace(gc_testing)("Hole returned of size %lu (remaining : %lu)", want_to_allocate, remaining);
-                //log_trace(gc_testing)("Remaining hole : %lu", getSize(dummy));
+                _holes_young[i] = dummy;
+                log_trace(gc_testing)("Hole returned of size %lu (remaining : %lu)", want_to_allocate, remaining);
+                //log_trace(gc_testing)("Remaining hole : %lu", get_size(dummy));
+                //return nullptr;
+
+                HeapWord* word = obj;
+                int i = 0;
+                while (word != region->end()) {
+
+                    size_t size = cast_to_oop(word)->size();
+                    log_trace(gc_testing)("Object %d of size %lu (" PTR_FORMAT " / " PTR_FORMAT " (%lu))", 
+                        i, size, p2i(word), p2i(region->end()), pointer_delta(region->end(), word));
+                    word += size;
+                    i++;
+                }
+
+
                 return obj;
             }
         }
@@ -97,42 +197,98 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole_old(size_t min_word_size,
                                                   size_t desired_word_size,
                                                   size_t* actual_word_size) {
 
-    log_trace(gc_testing)("Find hole (OLD) of size %lu", min_word_size);
-    /*for (uint i = 0; i < _size; i++) {
-        HeapWord* obj = _holes_young[i];
+    log_trace(gc_testing)("Find hole (OLD) of size %lu", desired_word_size);
+    //return nullptr;
+    for (uint i = 0; i < _size; i++) {
+        HeapWord* obj = _holes_old[i];
         if (obj != nullptr) {
-            size_t available = getSize(obj);
-            size_t want_to_allocate = MIN2(available, desired_word_size);
 
-            if (want_to_allocate >= min_word_size) {
-                size_t remaining = available - want_to_allocate;                
+            G1HeapRegion* region = _g1h->heap_region_containing(obj);
+            HeapWord* next = nullptr;
+            int j = 0;
 
-                HeapWord* dummy = obj + want_to_allocate;
-                
-                G1HeapRegion* region = _g1h->heap_region_containing(dummy);
+            do {
 
-                region->fill_with_dummy_object(dummy, remaining);
-                region->set_pre_dummy_top(dummy);
+                size_t available = get_size(obj);
+                size_t want_to_allocate = MIN2(available, desired_word_size);
+                size_t remaining = available - want_to_allocate;  
+                next = get_next(obj);
 
-                *actual_word_size = want_to_allocate;
-                //log_trace(gc_testing)("Hole returned of size %lu (remaining : %lu)", want_to_allocate, remaining);
-                //log_trace(gc_testing)("Remaining hole : %lu", getSize(dummy));
-                return obj;
-            }
+                log_trace(gc_testing)("\tHole %d (%d): %lu", i, j, available);
+
+                if (want_to_allocate >= min_word_size && remaining > _min_hole_size_old) {
+                    log_trace(gc_testing)("Hole index : %d", i);              
+
+                    HeapWord* dummy = obj + want_to_allocate;
+                    
+                    log_trace(gc_testing)("obj   (" PTR_FORMAT ")", p2i(obj));
+                    log_trace(gc_testing)("dummy (" PTR_FORMAT ")", p2i(dummy));
+                    G1HeapRegion* obj_region = _g1h->heap_region_containing(obj);
+                    log_trace(gc_testing)("top: %lu, end: %lu, diff: %lu, size: %lu, rem: %lu",
+                    p2i(region->top()), p2i(region->end()), pointer_delta(region->end(), region->top()), want_to_allocate, remaining);
+
+                    log_trace(gc_testing)("obj   region: %u", obj_region->hrm_index());
+                    log_trace(gc_testing)("dummy region: %u", region->hrm_index());
+
+                    region->fill_with_dummy_object(obj, want_to_allocate);
+                    region->fill_with_dummy_object(dummy, remaining);
+                    set_size(dummy, remaining);
+                    set_next(dummy, next);
+
+                    log_trace(gc_testing)("Cast obj");
+                    oop o = cast_to_oop(obj);
+                    log_trace(gc_testing)("size: %ld", o->size());
+
+                    log_trace(gc_testing)("Cast dummy");
+                    o = cast_to_oop(dummy);
+                    log_trace(gc_testing)("size: %ld", o->size());
+
+                    *actual_word_size = want_to_allocate;
+                    _holes_young[i] = dummy;
+                    log_trace(gc_testing)("Hole returned of size %lu (remaining : %lu)", want_to_allocate, remaining);
+                    //log_trace(gc_testing)("Remaining hole : %lu", get_size(dummy));
+                    //return nullptr;
+
+                   /* HeapWord* word = obj;
+                    int i = 0;
+                    while (word != region->end()) {
+
+                        size_t size = cast_to_oop(word)->size();
+                        log_trace(gc_testing)("Object %d of size %lu (" PTR_FORMAT " / " PTR_FORMAT " (%lu))", 
+                            i, size, p2i(word), p2i(region->end()), pointer_delta(region->end(), word));
+                        word += size;
+                        i++;
+                    }*/
+
+
+                    return obj;
+                }
+                j++;
+                obj = next;
+            } while (next != region->end() && false);
         }
-    }*/
+    }
 
     return nullptr;
 }
 
-void G1RegionFreeSpaceTracker::clean_up_holes() {
+void G1RegionFreeSpaceTracker::clean_up_holes_young() {
+    log_trace(gc_testing)("Clean up holes young");
     for (uint i = 0; i < _size; i++) {
         _holes_young[i] = nullptr;
     }
 }
 
-void G1RegionFreeSpaceTracker::remove_hole(G1HeapRegion* region) {
-    //TODO ?
+void G1RegionFreeSpaceTracker::clean_up_holes_old() {
+    log_trace(gc_testing)("Clean up holes old");
+    for (uint i = 0; i < _size; i++) {
+        _holes_old[i] = nullptr;
+    }
+}
+
+void G1RegionFreeSpaceTracker::remove_region(G1HeapRegion* region) {
+    //_holes_young[region->hrm_index()] = nullptr;
+    //_holes_old[region->hrm_index()] = nullptr;
 }
 
 void G1RegionFreeSpaceTracker::dump_holes() {
@@ -147,7 +303,7 @@ void G1RegionFreeSpaceTracker::dump_holes() {
             HeapWord* end = region->end();
             log_trace(gc_testing)("Region %u", i);
             while (word != end) {
-                size_t size = getSize(word);
+                size_t size = get_size(word);
                 HeapWord* next = end; //getNext(word);
                 log_trace(gc_testing)("\tHole at: " PTR_FORMAT ", size = %7lu, next = " PTR_FORMAT,
                     p2i(word), size, p2i(next));
