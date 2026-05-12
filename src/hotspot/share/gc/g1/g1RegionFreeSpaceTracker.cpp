@@ -287,8 +287,8 @@ void G1RegionFreeSpaceTracker::clean_up_holes_old() {
 }
 
 void G1RegionFreeSpaceTracker::remove_region(G1HeapRegion* region) {
-    //_holes_young[region->hrm_index()] = nullptr;
-    //_holes_old[region->hrm_index()] = nullptr;
+    _holes_young[region->hrm_index()] = nullptr;
+    _holes_old[region->hrm_index()] = nullptr;
 }
 
 void G1RegionFreeSpaceTracker::dump_holes() {
