@@ -244,7 +244,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole_old(size_t min_word_size,
                     log_trace(gc_testing)("size: %ld", o->size());
 
                     *actual_word_size = want_to_allocate;
-                    _holes_young[i] = dummy;
+                    _holes_old[i] = dummy;
                     log_trace(gc_testing)("Hole returned of size %lu (remaining : %lu)", want_to_allocate, remaining);
                     //log_trace(gc_testing)("Remaining hole : %lu", get_size(dummy));
                     //return nullptr;
