@@ -41,23 +41,23 @@ class G1RegionFreeSpaceTracker {
         void dump_hole_stats();
 
         void set_size(HeapWord* word, size_t size) {
-            int header_size = oopDesc::header_size();
+            int header_size = CollectedHeap::min_fill_size();
             *(size_t*)(word + header_size) = size;
         }
 
         size_t get_size(HeapWord* word) {
-            int header_size = oopDesc::header_size();
+            int header_size = CollectedHeap::min_fill_size();
             int size = *(size_t*)(word + header_size);
             return size;
         }
 
         void set_next(HeapWord* word, HeapWord* next) {
-            int header_size = oopDesc::header_size();
+            int header_size = CollectedHeap::min_fill_size();
             *(HeapWord**)(word + header_size + 1) = next;
         }
 
         HeapWord* get_next(HeapWord* word) {
-            int header_size = oopDesc::header_size();
+            int header_size = CollectedHeap::min_fill_size();
             return *(HeapWord**)(word + header_size + 1);
         }
 

@@ -22,8 +22,8 @@ G1RegionFreeSpaceTracker::~G1RegionFreeSpaceTracker() {
 void G1RegionFreeSpaceTracker::initialize() {
 
     _size = _g1h->max_num_regions();
-    _min_hole_size_young = _g1h->min_fill_size() + 2;
-    _min_hole_size_old  = _g1h->min_fill_size() + 2+ 30;
+    _min_hole_size_young = CollectedHeap::min_fill_size() + 2;
+    _min_hole_size_old   = CollectedHeap::min_fill_size() + 2 + 30;
     _holes_young = NEW_C_HEAP_ARRAY(HeapWord*, _size, mtGC);
     _holes_old = NEW_C_HEAP_ARRAY(HeapWord*, _size, mtGC);
     for (uint i = 0; i < _size; i++) {
@@ -31,7 +31,10 @@ void G1RegionFreeSpaceTracker::initialize() {
         _holes_old[i] = nullptr;
     }
     log_trace(gc_testing)("Create hole array (%u regions)", _g1h->max_num_regions());
-    dump_holes();
+    log_trace(gc_testing)("Header size of arrays (byte) : %lu", CollectedHeap::min_fill_size());
+    log_trace(gc_testing)("Header size of arrays (word?): %lu", CollectedHeap::min_fill_size() / HeapWordSize);
+        
+    //dump_holes();
 
 }
 
@@ -49,6 +52,16 @@ void G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region,
 }
 
 void G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+
+    region->fill_with_dummy_object(word, 3);
+    arrayOop o = (arrayOop)cast_to_oop(word);
+    log_trace(gc_testing)("o size : %lu", o->size());
+    int* len = o->length_addr();
+    void* base = o->base_addr();
+    log_trace(gc_testing)("word  : " PTR_FORMAT, p2i(word));
+    log_trace(gc_testing)("len   : " PTR_FORMAT, p2i(len));
+    log_trace(gc_testing)("base  : " PTR_FORMAT, p2i(base));
+
 
     if (size_in_words < _min_hole_size_old) {
         log_trace(gc_testing)("%ld < %ld", size_in_words, _min_hole_size_old);
@@ -155,6 +168,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole_young(size_t min_word_size,
                 log_trace(gc_testing)("dummy region: %u", region->hrm_index());
 
                 region->fill_with_dummy_object(obj, want_to_allocate);
+                region->set_top(dummy);
                 region->fill_with_dummy_object(dummy, remaining);
                 set_size(dummy, remaining);
                 set_next(dummy, region->end());
