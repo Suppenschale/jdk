@@ -523,6 +523,30 @@ void G1RegionFreeSpaceTracker::right_rotate(HeapWord* &root, HeapWord* x) {
     set_parent(x, y);
 }
 
+HeapWord* G1RegionFreeSpaceTracker::remove_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* remove) {
+
+    HeapWord* start = list[region->hrm_index()];
+    HeapWord* curr = start;
+    HeapWord* prev = start;
+
+    while (curr != nullptr) {
+        if (curr == remove) {
+            set_next(prev, get_next(curr));
+            set_next(curr, nullptr);
+
+            if (curr == start) {
+                list[region->hrm_index()] = get_next(curr);
+            }
+
+            break;
+        }
+        prev = curr;
+        curr = get_next(curr);
+    }
+
+    return curr;
+}
+
 HeapWord* G1RegionFreeSpaceTracker::remove_hole_tree(HeapWord* &root, HeapWord* remove) {
 
     if (remove == nullptr) {
@@ -800,18 +824,17 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole_old(size_t min_word_size,
 
 HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen) {
 
+    G1HeapRegion* region = _g1h->heap_region_containing(hole);
+
+    remove_hole_list(young_gen? _holes_young : _holes_old, region, hole);
     if (_use_tree) {        
         log_trace(gc_testing)("Remove hole from tree");
         remove_hole_tree(young_gen? _root_young : _root_old, hole);
-    } else {
-        //TODO: remove from list
-    }
+    } else 
 
     size_t available = get_size(hole);
     size_t want_to_allocate = word_size;
-    size_t remaining = available - want_to_allocate;
-    
-    G1HeapRegion* region = _g1h->heap_region_containing(hole);
+    size_t remaining = available - want_to_allocate;    
 
     // Fill hole with dummy object
     region->fill_with_dummy_object(hole, want_to_allocate);

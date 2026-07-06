@@ -91,6 +91,7 @@ class G1RegionFreeSpaceTracker {
         void left_rotate(HeapWord* &root, HeapWord* x);
         void right_rotate(HeapWord* &root, HeapWord* x);
 
+        HeapWord* remove_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* remove);
         HeapWord* remove_hole_tree(HeapWord* &root, HeapWord* remove);
 
         HeapWord* find_exact_hole(HeapWord* &root, size_t size) const;
