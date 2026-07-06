@@ -206,6 +206,9 @@ private:
   // For a humongous region, region in which it starts.
   G1HeapRegion* _humongous_start_region;
 
+  // Pointer to the boundary where the humongous object ends and old objects begin.
+  HeapWord* _old_objects_start;
+
   static const uint InvalidCSetIndex = UINT_MAX;
 
   // The index in the optional regions array, if this region
@@ -425,6 +428,17 @@ public:
 
   // Unsets the humongous-related fields on the region.
   void clear_humongous();
+
+  // For alloation after a humongous object we need to set and check a boundary 
+  // where the humongous object ends and old objects begin.
+  
+  bool has_humongous_tail() const;
+
+  HeapWord* old_objects_start() const;
+  
+  void set_old_objects_start(HeapWord* old_objects_start);
+
+  void clear_old_objects_start();
 
   void set_rem_set(G1HeapRegionRemSet* rem_set) { _rem_set = rem_set; }
   // If the region has a remembered set, return a pointer to it.

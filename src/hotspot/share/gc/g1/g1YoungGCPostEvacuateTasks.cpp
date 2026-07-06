@@ -334,8 +334,6 @@ G1PostEvacuateCollectionSetCleanupTask1::G1PostEvacuateCollectionSetCleanupTask1
   if (evac_failed) {
     add_parallel_task(new RestoreEvacFailureRegionsTask(evac_failure_regions));
   }
-
-  G1CollectedHeap::heap()->_tracker.clean_up_holes_young();
 }
 
 class G1FreeHumongousRegionClosure : public G1HeapRegionIndexClosure {

@@ -92,7 +92,14 @@ public:
       _usage._eden_used += r->used();
       _usage._eden_region_count++;
     } else if (r->is_humongous()) {
-      _usage._humongous_used += r->used();
+      if (r->has_humongous_tail()) {
+
+        _usage._humongous_used += byte_size(r->bottom(), r->old_objects_start());
+        //use new field
+        _usage._old_used += byte_size(r->old_objects_start(), r->top());
+      } else {
+        _usage._humongous_used += r->used();
+      }
       _usage._humongous_region_count++;
     } else {
       assert(r->used() == 0, "Expected used to be 0 but it was %zu", r->used());

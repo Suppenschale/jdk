@@ -367,7 +367,8 @@ void G1CMMarkStack::set_empty() {
 }
 
 G1CMRootMemRegions::G1CMRootMemRegions(uint const max_regions) :
-    _root_regions(MemRegion::create_array(max_regions, mtGC)),
+    _root_regions(new GrowableArray<MemRegion>(max_regions, mtGC)),
+    //_root_regions(MemRegion::create_array(max_regions, mtGC)),
     _max_regions(max_regions),
     _num_root_regions(0),
     _claimed_root_regions(0),
@@ -375,7 +376,8 @@ G1CMRootMemRegions::G1CMRootMemRegions(uint const max_regions) :
     _should_abort(false) { }
 
 G1CMRootMemRegions::~G1CMRootMemRegions() {
-  MemRegion::destroy_array(_root_regions, _max_regions);
+  delete _root_regions;
+  //MemRegion::destroy_array(_root_regions, _max_regions);
 }
 
 void G1CMRootMemRegions::reset() {
@@ -385,11 +387,15 @@ void G1CMRootMemRegions::reset() {
 void G1CMRootMemRegions::add(HeapWord* start, HeapWord* end) {
   assert_at_safepoint();
   size_t idx = AtomicAccess::fetch_then_add(&_num_root_regions, 1u);
-  assert(idx < _max_regions, "Trying to add more root MemRegions than there is space %zu", _max_regions);
+  //assert(idx < _max_regions, "Trying to add more root MemRegions than there is space %zu", _max_regions);
   assert(start != nullptr && end != nullptr && start <= end, "Start (" PTR_FORMAT ") should be less or equal to "
          "end (" PTR_FORMAT ")", p2i(start), p2i(end));
-  _root_regions[idx].set_start(start);
-  _root_regions[idx].set_end(end);
+
+  // Not thread safe! Is there a Concurrency Safe data strucutre in VM?
+  // Just lock it? (not called often (?))
+  _root_regions->at_put_grow(idx, MemRegion(start, end));
+  //_root_regions[idx].set_start(start);
+  //_root_regions[idx].set_end(end);
 }
 
 void G1CMRootMemRegions::prepare_for_scan() {
@@ -414,7 +420,9 @@ const MemRegion* G1CMRootMemRegions::claim_next() {
 
   size_t claimed_index = AtomicAccess::fetch_then_add(&_claimed_root_regions, 1u);
   if (claimed_index < _num_root_regions) {
-    return &_root_regions[claimed_index];
+    // Same problem here (read on potential at_put_grow)
+    return &_root_regions->at(claimed_index);
+    //return &_root_regions[claimed_index];
   }
   return nullptr;
 }
@@ -425,7 +433,9 @@ uint G1CMRootMemRegions::num_root_regions() const {
 
 bool G1CMRootMemRegions::contains(const MemRegion mr) const {
   for (uint i = 0; i < _num_root_regions; i++) {
-    if (_root_regions[i].equals(mr)) {
+    // Same problem here (read on potential at_put_grow)
+    if (_root_regions->at(i).equals(mr)) {
+    //if (_root_regions[i].equals(mr)) {
       return true;
     }
   }
@@ -1090,6 +1100,10 @@ bool G1ConcurrentMark::wait_until_root_region_scan_finished() {
 
 void G1ConcurrentMark::add_root_region(G1HeapRegion* r) {
   root_regions()->add(top_at_mark_start(r), r->top());
+}
+
+void G1ConcurrentMark::add_root_region_range(HeapWord* start, HeapWord* end) {
+  root_regions()->add(start, end);
 }
 
 bool G1ConcurrentMark::is_root_region(G1HeapRegion* r) {

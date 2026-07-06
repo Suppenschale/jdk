@@ -120,11 +120,9 @@ size_t G1AllocRegion::retire(bool fill_up) {
   G1HeapRegion* alloc_region = _alloc_region;
   if (alloc_region != _dummy_region) {
     waste = retire_internal(alloc_region, fill_up);
-    if (alloc_region->is_survivor()) {
-      actual_waste = pointer_delta(alloc_region->end(), alloc_region->top()) * HeapWordSize;
-      if (UseNewCode) {
-        _g1h->_tracker.add_potential_survivor_hole(alloc_region, alloc_region->pre_dummy_top(), actual_waste);
-      } 
+    if (UseNewCode && alloc_region->is_survivor()) {
+      actual_waste = pointer_delta(alloc_region->end(), alloc_region->pre_dummy_top()) * HeapWordSize;
+      _g1h->_tracker.add_potential_survivor_hole(alloc_region, alloc_region->pre_dummy_top(), actual_waste);
     }  
     reset_alloc_region();
   }
@@ -193,7 +191,7 @@ G1HeapRegion* G1AllocRegion::release() {
   if (alloc_region->is_survivor()) {
     log_trace(gc_testing)("Survivor region releasing...");
   }
-  retire(false /* fill_up */);
+  retire(alloc_region->is_survivor() /* fill_up */);
   if (alloc_region->is_survivor()) {
     log_trace(gc_testing)("Survivor region released");
   }

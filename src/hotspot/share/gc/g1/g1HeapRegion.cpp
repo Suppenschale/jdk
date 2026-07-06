@@ -225,8 +225,27 @@ void G1HeapRegion::clear_humongous() {
     cset_group->clear();
     delete cset_group;
   }
+  clear_old_objects_start();
   _humongous_start_region = nullptr;
 }
+
+bool G1HeapRegion::has_humongous_tail() const {
+  return _old_objects_start != nullptr && _old_objects_start != top();
+}
+
+HeapWord* G1HeapRegion::old_objects_start() const {
+  return _old_objects_start;
+}
+
+void G1HeapRegion::set_old_objects_start(HeapWord* old_objects_start) {
+  assert(is_continues_humongous(), "tail only last humongous");
+  _old_objects_start = old_objects_start; //top();
+}
+
+void G1HeapRegion::clear_old_objects_start() {
+  _old_objects_start = nullptr;
+}
+
 
 void G1HeapRegion::prepare_remset_for_scan() {
   if (is_young()) {
@@ -248,6 +267,7 @@ G1HeapRegion::G1HeapRegion(uint hrm_index,
   _hrm_index(hrm_index),
   _type(),
   _humongous_start_region(nullptr),
+  _old_objects_start(nullptr),
   _index_in_opt_cset(InvalidCSetIndex),
   _next(nullptr), _prev(nullptr),
 #ifdef ASSERT

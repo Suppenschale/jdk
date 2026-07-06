@@ -307,6 +307,11 @@ HeapWord* G1HeapRegion::do_oops_on_memregion_in_humongous(MemRegion mr,
     return nullptr;
   }
 
+  if (has_humongous_tail() && old_objects_start() <= mr.start() && mr.start() <= top()) {
+      oops_on_memregion_iterate<Closure, in_gc_pause>(mr, cl);
+      return mr.end();
+  }
+
   // We have a well-formed humongous object at the start of sr.
   // Only filler objects follow a humongous object in the containing
   // regions, and we can ignore those.  So only process the one

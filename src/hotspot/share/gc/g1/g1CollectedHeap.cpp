@@ -281,9 +281,25 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
   // and the BOT will not be complete.
   hr->set_top(hr->end() - words_not_fillable);
 
-  if (UseNewCode2) {
-    log_trace(gc_testing)("Humgouns region with hole of size: %lu", words_fillable);
-    _tracker.add_potential_humongous_hole(hr, hr->end() - words_fillable, words_fillable);
+  if (UseNewCode2) { // otherwise will write out-of-bounds with almost-full regions; should also take (a future) minimum hole size into account
+    // Calculate start of humongous tail aligned with card table
+    HeapWord* card_alignment = align_up(obj_top, CardTable::card_size_in_words());
+
+    size_t gap = pointer_delta(card_alignment, obj_top);
+
+    // If gap between obj_top and tail start is to small for filler object align with next card 
+    if (gap < G1CollectedHeap::min_fill_size()) {
+      card_alignment += CardTable::card_size_in_words();
+    }
+
+    // If there is enough space for tail, we only fill the gap until the card alignment
+    // and set top to this position.
+    if (card_alignment < hr->end()) {
+      G1CollectedHeap::fill_with_objects(obj_top, gap);
+      hr->set_top(card_alignment);
+      hr->set_old_objects_start(card_alignment);
+      _tracker.add_potential_humongous_hole(hr, card_alignment, pointer_delta(hr->end(), card_alignment));
+    }
   }
 
   assert(hr->bottom() < obj_top && obj_top <= hr->end(),
@@ -422,7 +438,10 @@ G1CollectedHeap::mem_allocate(size_t word_size) {
   return attempt_allocation(word_size, word_size, &dummy);
 }
 
-HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index, size_t word_size) {
+HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index,
+                                                   size_t min_word_size,
+                                                   size_t word_size,
+                                                   size_t* actual_word_size) {
   ResourceMark rm; // For retrieving the thread names in log messages.
 
   // Make sure you read the note in attempt_allocation_humongous().
@@ -444,6 +463,14 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index, size_t word_
     {
       MutexLocker x(Heap_lock);
 
+      if (UseNewCode) {
+        result = _tracker.find_hole_young(min_word_size, 
+                                          word_size, 
+                                          actual_word_size);
+        if (result != nullptr) {
+          return result;
+        }
+      }
       // Now that we have the lock, we first retry the allocation in case another
       // thread changed the region while we were waiting to acquire the lock.
       result = _allocator->attempt_allocation_locked(node_index, word_size);
@@ -629,7 +656,7 @@ inline HeapWord* G1CollectedHeap::attempt_allocation(size_t min_word_size,
 
   if (result == nullptr) {
     *actual_word_size = desired_word_size;
-    result = attempt_allocation_slow(node_index, desired_word_size);
+    result = attempt_allocation_slow(node_index, min_word_size, desired_word_size, actual_word_size);
   }
 
   assert_heap_not_locked();
@@ -2829,8 +2856,15 @@ void G1CollectedHeap::retain_region(G1HeapRegion* hr) {
 void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
                                             G1FreeRegionList* free_list) {
   assert(hr->is_humongous(), "this is only for humongous regions");
+  bool has_tail = hr->has_humongous_tail();
   hr->clear_humongous();
-  free_region(hr, free_list);
+  if (has_tail) {
+    hr->fill_with_dummy_object(hr->bottom(), pointer_delta(hr->old_objects_start(), hr->bottom()));
+    hr->move_to_old();
+    _old_set.add(hr);
+  } else {
+    free_region(hr, free_list);
+  }
 }
 
 void G1CollectedHeap::remove_from_old_gen_sets(const uint old_regions_removed,

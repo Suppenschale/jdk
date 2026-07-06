@@ -536,6 +536,9 @@ void G1YoungCollector::pre_evacuate_collection_set(G1EvacInfo* evacuation_info) 
     Ticks start = Ticks::now();
     concurrent_mark()->pre_concurrent_start(_gc_cause);
     phase_times()->record_prepare_concurrent_task_time_ms((Ticks::now() - start).seconds() * 1000.0);
+    // should be trakced separately
+    // Drop all old holes to avoid problems with SATB invariant.
+    _g1h->_tracker.clean_up_holes_old();
   }
 
   // Please see comment in g1CollectedHeap.hpp and

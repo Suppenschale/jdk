@@ -318,7 +318,7 @@ private:
 // of the GC, and any objects copied into the old gen during GC.
 class G1CMRootMemRegions {
   // The set of root MemRegions.
-  MemRegion* _root_regions;
+  GrowableArray<MemRegion>* _root_regions;
   size_t const _max_regions;
 
   volatile size_t _num_root_regions; // Actual number of root regions.
@@ -656,6 +656,7 @@ public:
   void scan_root_regions();
   bool wait_until_root_region_scan_finished();
   void add_root_region(G1HeapRegion* r);
+  void add_root_region_range(HeapWord* start, HeapWord* end);
   bool is_root_region(G1HeapRegion* r);
   void root_region_scan_abort_and_wait();
 

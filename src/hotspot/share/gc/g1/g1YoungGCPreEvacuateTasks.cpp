@@ -114,4 +114,5 @@ G1PreEvacuateCollectionSetBatchTask::G1PreEvacuateCollectionSetBatchTask() :
 
 G1PreEvacuateCollectionSetBatchTask::~G1PreEvacuateCollectionSetBatchTask() {
   _java_retire_task->tlab_stats().publish();
+  G1CollectedHeap::heap()->_tracker.clean_up_holes_young();
 }

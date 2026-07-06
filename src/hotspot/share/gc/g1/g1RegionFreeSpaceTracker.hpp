@@ -4,6 +4,21 @@
 #include "oops/oop.hpp"
 #include "oops/oopsHierarchy.hpp"
 
+// Prefix of ListHole and TreeHole are the same
+struct ListHole {
+    size_t size;
+    HeapWord* next;
+};
+
+struct TreeHole {
+    size_t size;
+    HeapWord* next;
+    HeapWord* parent;
+    HeapWord* left;
+    HeapWord* right;
+    bool red;
+};
+
 class G1RegionFreeSpaceTracker {
 
     private:
@@ -11,10 +26,15 @@ class G1RegionFreeSpaceTracker {
         HeapWord** _holes_young;
         HeapWord** _holes_old;
 
+        HeapWord* _root_young;
+        HeapWord* _root_old;
+
         uint _size;
 
         size_t _min_hole_size_young;
         size_t _min_hole_size_old;
+
+        bool _use_tree;
 
     public:
         G1RegionFreeSpaceTracker(G1CollectedHeap* heap);
@@ -27,9 +47,60 @@ class G1RegionFreeSpaceTracker {
         void add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size);
         void add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size);
 
+        void set_hole_list(HeapWord* word, size_t size, HeapWord* next);
+        ListHole* get_hole_list(HeapWord* word) const;
+
+        void set_hole_tree(HeapWord* word);
+        TreeHole* get_hole_tree(HeapWord* word) const;
+
+        void set_size(HeapWord* word, size_t size);
+        size_t get_size(HeapWord* word) const;
+
+        void set_next(HeapWord* word, HeapWord* next);
+        HeapWord* get_next(HeapWord* word) const;
+
+        void set_parent(HeapWord* word, HeapWord* parent);
+        HeapWord* get_parent(HeapWord* word) const;
+
+        void set_left(HeapWord* word, HeapWord* left);
+        HeapWord* get_left(HeapWord* word) const;
+
+        void set_right(HeapWord* word, HeapWord* right);
+        HeapWord* get_right(HeapWord* word) const;
+
+        void set_color(HeapWord* word, bool red);
+        bool get_color(HeapWord* word) const;
+
+        void set_red(HeapWord* word);
+        bool is_red(HeapWord* word) const;
+
+        void set_black(HeapWord* word);
+        bool is_black(HeapWord* word) const;
+
+        void add_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+        void add_hole_tree(HeapWord* &root, HeapWord* word, size_t size_in_words);
+
+        void transplant(HeapWord* &root, HeapWord* u, HeapWord* v);
+
+        bool is_left(HeapWord* word) const;        
+        bool is_right(HeapWord* word) const;
+
+        void rb_insert_fixup(HeapWord* &root, HeapWord* word);
+        void rb_remove_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent);
+
+        void left_rotate(HeapWord* &root, HeapWord* x);
+        void right_rotate(HeapWord* &root, HeapWord* x);
+
+        HeapWord* remove_hole_tree(HeapWord* &root, HeapWord* remove);
+
+        HeapWord* find_exact_hole(HeapWord* &root, size_t size) const;
+        HeapWord* find_best_fitting_hole(HeapWord* &root, size_t min_size) const;
+        bool is_splittable(size_t min_size, size_t hole_size) const;
 
         HeapWord* find_hole_young(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
         HeapWord* find_hole_old(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
+
+        HeapWord* split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen);
 
         //void remove_hole_humongous(G1HeapRegion* region);
         void clean_up_holes_young();
@@ -40,26 +111,9 @@ class G1RegionFreeSpaceTracker {
         void dump_holes();
         void dump_hole_stats();
 
-        void set_size(HeapWord* word, size_t size) {
-            int header_size = CollectedHeap::min_fill_size();
-            *(size_t*)(word + header_size) = size;
-        }
+        void dump_tree_node(HeapWord* word);
 
-        size_t get_size(HeapWord* word) {
-            int header_size = CollectedHeap::min_fill_size();
-            int size = *(size_t*)(word + header_size);
-            return size;
-        }
-
-        void set_next(HeapWord* word, HeapWord* next) {
-            int header_size = CollectedHeap::min_fill_size();
-            *(HeapWord**)(word + header_size + 1) = next;
-        }
-
-        HeapWord* get_next(HeapWord* word) {
-            int header_size = CollectedHeap::min_fill_size();
-            return *(HeapWord**)(word + header_size + 1);
-        }
+        void inorder_traversal(HeapWord* root);
 
 };
 

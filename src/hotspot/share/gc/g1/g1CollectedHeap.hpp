@@ -469,7 +469,7 @@ private:
   // Second-level mutator allocation attempt: take the Heap_lock and
   // retry the allocation attempt, potentially scheduling a GC
   // pause. This should only be used for non-humongous allocations.
-  HeapWord* attempt_allocation_slow(uint node_index, size_t word_size);
+  HeapWord* attempt_allocation_slow(uint node_index, size_t min_word_size, size_t word_size, size_t* actual_word_size);
 
   // Takes the Heap_lock and attempts a humongous allocation. It can
   // potentially schedule a GC pause.

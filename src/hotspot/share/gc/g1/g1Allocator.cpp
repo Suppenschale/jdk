@@ -216,6 +216,7 @@ HeapWord* G1Allocator::par_allocate_during_gc(G1HeapRegionAttr dest,
                                               size_t word_size) {
   size_t temp = 0;
   HeapWord* result = par_allocate_during_gc(dest, node_index, word_size, word_size, &temp);
+  // Might get a too large buffer. Just fill (be conservative) to keep parsability.
   assert(result == nullptr || temp == word_size,
          "Requested %zu words, but got %zu at " PTR_FORMAT,
          word_size, temp, p2i(result));
@@ -250,17 +251,10 @@ HeapWord* G1Allocator::survivor_attempt_allocation(uint node_index,
                                                                               actual_word_size);
   if (result == nullptr && !survivor_is_full()) {
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
-
-    if (UseNewCode) {
-      result = _g1h->_tracker.find_hole_young(min_word_size, 
-                                           desired_word_size, 
-                                           actual_word_size); 
-    }
-
     // Multiple threads may have queued at the FreeList_lock above after checking whether there
     // actually is still memory available. Redo the check under the lock to avoid unnecessary work;
     // the memory may have been used up as the threads waited to acquire the lock.
-    if (result == nullptr && !survivor_is_full()) {
+    if (!survivor_is_full()) {
       result = survivor_gc_alloc_region(node_index)->attempt_allocation_locked(min_word_size,
                                                                                desired_word_size,
                                                                                actual_word_size);
@@ -281,13 +275,13 @@ HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
   HeapWord* result = old_gc_alloc_region()->attempt_allocation(min_word_size,
                                                                desired_word_size,
                                                                actual_word_size);
-  if (result == nullptr && !old_is_full()) {
+  if (result == nullptr && !old_is_full()) { // and there are no holes left...
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
 
-    if (UseNewCode3 || UseNewCode3) {
+    if (UseNewCode2 || UseNewCode3) {      
       result = _g1h->_tracker.find_hole_old(min_word_size, 
-                                           desired_word_size, 
-                                           actual_word_size); 
+                                            desired_word_size, 
+                                            actual_word_size); 
     }
 
     // Multiple threads may have queued at the FreeList_lock above after checking whether there
@@ -407,6 +401,7 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(G1HeapRegionAttr dest,
     plab_word_size = next_plab_word_size;
 
     size_t actual_plab_size = 0;
+
     HeapWord* buf = _allocator->par_allocate_during_gc(dest,
                                                        node_index,
                                                        required_in_plab,
