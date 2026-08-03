@@ -281,7 +281,7 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
   // and the BOT will not be complete.
   hr->set_top(hr->end() - words_not_fillable);
 
-  if (UseNewCode2) { // otherwise will write out-of-bounds with almost-full regions; should also take (a future) minimum hole size into account
+  if (UseNewCode) { 
     // Calculate start of humongous tail aligned with card table
     HeapWord* card_alignment = align_up(obj_top, CardTable::card_size_in_words());
 
@@ -295,10 +295,12 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
     // If there is enough space for tail, we only fill the gap until the card alignment
     // and set top to this position.
     if (card_alignment < hr->end()) {
-      G1CollectedHeap::fill_with_objects(obj_top, gap);
+      G1CollectedHeap::fill_with_objects(obj_top, pointer_delta(card_alignment, obj_top));
       hr->set_top(card_alignment);
       hr->set_old_objects_start(card_alignment);
-      _tracker.add_potential_humongous_hole(hr, card_alignment, pointer_delta(hr->end(), card_alignment));
+      size_t hole_size = pointer_delta(hr->end(), card_alignment);
+      G1CollectedHeap::fill_with_objects(card_alignment, hole_size);
+      add_potential_humongous_hole(hr, card_alignment, hole_size);
     }
   }
 
@@ -463,7 +465,7 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index,
     {
       MutexLocker x(Heap_lock);
 
-      if (UseNewCode) {
+      if (UseNewCode2) {
         result = _tracker.find_hole_young(min_word_size, 
                                           word_size, 
                                           actual_word_size);
@@ -1603,6 +1605,9 @@ void G1CollectedHeap::stop() {
   _cr->stop();
   _service_thread->stop();
   _cm_thread->stop();
+  
+  _tracker.print_statistics();
+
 }
 
 void G1CollectedHeap::safepoint_synchronize_begin() {
@@ -2986,6 +2991,21 @@ void G1CollectedHeap::decrease_used(size_t bytes) {
 void G1CollectedHeap::set_used(size_t bytes) {
   _summary_bytes_used = bytes;
 }
+
+
+void G1CollectedHeap::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+  _tracker.add_potential_survivor_hole(region, word, size_in_words);
+}
+
+void G1CollectedHeap::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+  _tracker.add_potential_humongous_hole(region, word, size_in_words);
+}
+
+void G1CollectedHeap::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+  _tracker.add_potential_old_hole(region, word, size_in_words);
+}
+
+
 
 class RebuildRegionSetsClosure : public G1HeapRegionClosure {
 private:

@@ -250,6 +250,21 @@ class HashTableBase : public STORAGE {
     return remove(key, dummy);
   }
 
+
+  void clear() {
+    
+    class ClearClosure : public StackObj {
+        public:
+          bool do_entry(K const&, V&) {
+            return true;
+          }
+    };
+
+    ClearClosure closure;
+    unlink(&closure);
+
+  }
+
   // ITER contains bool do_entry(K const&, V const&), which will be
   // called for each entry in the table.  If do_entry() returns false,
   // the iteration is cancelled.

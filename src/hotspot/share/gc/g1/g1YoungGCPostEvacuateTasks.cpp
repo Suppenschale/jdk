@@ -420,7 +420,13 @@ public:
       G1HeapRegionPrinter::eager_reclaim(r);
       // Humongous non-typeArrays may have dirty card tables. Need to be cleared. Do it
       // for all types just in case.
-      r->clear_both_card_tables();
+
+      // Should not clear card tables for the tail allocations. 
+      if (r->has_humongous_tail()) {
+        r->clear_both_card_tables(r->bottom(), r->old_objects_start());
+      } else {
+        r->clear_both_card_tables();
+      }
       _g1h->free_humongous_region(r, nullptr);
     };
 

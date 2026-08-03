@@ -526,7 +526,8 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
   _region_mark_stats(NEW_C_HEAP_ARRAY(G1RegionMarkStats, _g1h->max_num_regions(), mtGC)),
   _top_at_mark_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
   _top_at_rebuild_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
-  _needs_remembered_set_rebuild(false)
+  _needs_remembered_set_rebuild(false),
+  _left_allocated_objects_set(INITIAL_TABLE_SIZE, MAX_TABLE_SIZE)
 {
   assert(G1CGC_lock != nullptr, "CGC_lock must be initialized");
 
@@ -813,6 +814,9 @@ void G1ConcurrentMark::cleanup_for_next_mark() {
   guarantee(!_g1h->collector_state()->mark_or_rebuild_in_progress(), "invariant");
 
   clear_bitmap(_concurrent_workers, true);
+
+  // Clears sets of objects, allocated during marking
+  _left_allocated_objects_set.clear();
 
   // Repeat the asserts from above.
   guarantee(cm_thread()->in_progress(), "invariant");

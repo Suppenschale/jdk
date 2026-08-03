@@ -551,7 +551,19 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   HeapWord* volatile* _top_at_rebuild_starts;
   // True when Remark pause selected regions for rebuilding.
   bool _needs_remembered_set_rebuild;
+
+
+  static const int INITIAL_TABLE_SIZE = 15889; // prime number
+  static const int MAX_TABLE_SIZE     = 1000000;
+
+  typedef ResizeableHashTable<HeapWord*, bool, AnyObj::C_HEAP, mtGC> AllocationSet;
+
+  // Set of all objects allocated to the left of any TAMS
+  AllocationSet _left_allocated_objects_set;
 public:
+  // Add an object to the allocation set
+  void add_to_allocation_set(HeapWord* word);
+
   // To be called when an object is marked the first time, e.g. after a successful
   // mark_in_bitmap call. Updates various statistics data.
   void add_to_liveness(uint worker_id, oop const obj, size_t size);

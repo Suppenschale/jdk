@@ -171,8 +171,11 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         HeapWord* scrub_end = _bitmap->get_next_marked_addr(addr, limit);
         hr->fill_range_with_dead_objects(addr, scrub_end);
         
-        if (UseNewCode3) {
-          G1CollectedHeap::heap()->_tracker.add_potential_old_hole(hr, addr, pointer_delta(scrub_end, addr));
+        if (UseNewCode) {
+
+          MutexLocker x(Heap_lock);
+
+          G1CollectedHeap::heap()->add_potential_old_hole(hr, addr, pointer_delta(scrub_end, addr));
         } 
         // Return the next object to handle.
         return scrub_end;
@@ -243,6 +246,19 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
       MemRegion mr(hr->bottom(), MIN2(hr->top(), humongous_end));
 
       scan_large_object(hr, humongous, mr);
+
+      // Also needs to scan the tail allocations, e.g. allocated-into area for remembered sets
+      if (hr->has_humongous_tail()) {
+        HeapWord* start = hr->old_objects_start();
+        HeapWord* limit = _cm->top_at_rebuild_start(hr);
+        while (start < limit) {
+          start += scan_object(hr, start);
+
+          if (yield_if_necessary(hr)) {
+            return;
+          }
+        }
+      }
     }
 
   public:

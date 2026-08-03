@@ -1071,7 +1071,10 @@ public:
 
   G1RegionFreeSpaceTracker _tracker;
 
- public:
+  // hole tracker methods  
+  void add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+  void add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+  void add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words); 
 
   inline G1HeapRegionAttr region_attr(const void* obj) const;
   inline G1HeapRegionAttr region_attr(uint idx) const;

@@ -491,9 +491,12 @@ public:
   // Callers must ensure this is not called by multiple threads at the same time.
   void hr_clear(bool clear_space);
   // Clear the card table corresponding to this region.
+  void clear_card_table(HeapWord* start, HeapWord* end);
   void clear_card_table();
+  void clear_refinement_table(HeapWord* start, HeapWord* end);
   void clear_refinement_table();
 
+  void clear_both_card_tables(HeapWord* start, HeapWord* end);
   void clear_both_card_tables();
 
   // Notify the region that an evacuation failure occurred for an object within this

@@ -138,14 +138,27 @@ void G1HeapRegion::hr_clear(bool clear_space) {
   if (clear_space) clear(SpaceDecorator::Mangle);
 }
 
-void G1HeapRegion::clear_card_table() {
+void G1HeapRegion::clear_card_table(HeapWord* start, HeapWord* end) {
   G1CardTable* ct = G1CollectedHeap::heap()->card_table();
-  ct->clear_MemRegion(MemRegion(bottom(), end()));
+  ct->clear_MemRegion(MemRegion(start, end));
+}
+
+void G1HeapRegion::clear_card_table() {
+  clear_card_table(bottom(), end());
+}
+
+void G1HeapRegion::clear_refinement_table(HeapWord* start, HeapWord* end) {
+  G1CardTable* ct = G1CollectedHeap::heap()->refinement_table();
+  ct->clear_MemRegion(MemRegion(start, end));
 }
 
 void G1HeapRegion::clear_refinement_table() {
-  G1CardTable* ct = G1CollectedHeap::heap()->refinement_table();
-  ct->clear_MemRegion(MemRegion(bottom(), end()));
+  clear_refinement_table(bottom(), end());
+}
+
+void G1HeapRegion::clear_both_card_tables(HeapWord* start, HeapWord* end) {
+  clear_card_table(start, end);
+  clear_refinement_table(start, end);
 }
 
 void G1HeapRegion::clear_both_card_tables() {
