@@ -466,9 +466,9 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index,
       MutexLocker x(Heap_lock);
 
       if (UseNewCode2) {
-        result = _tracker.find_hole_young(min_word_size, 
-                                          word_size, 
-                                          actual_word_size);
+        result = find_young_hole(min_word_size, 
+                                 word_size, 
+                                 actual_word_size);
         if (result != nullptr) {
           return result;
         }
@@ -2862,11 +2862,13 @@ void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
                                             G1FreeRegionList* free_list) {
   assert(hr->is_humongous(), "this is only for humongous regions");
   bool has_tail = hr->has_humongous_tail();
+  size_t begin_size = pointer_delta(hr->old_objects_start(), hr->bottom());
   hr->clear_humongous();
   if (has_tail) {
-    hr->fill_with_dummy_object(hr->bottom(), pointer_delta(hr->old_objects_start(), hr->bottom()));
+    hr->fill_with_dummy_object(hr->bottom(), begin_size);
     hr->move_to_old();
     _old_set.add(hr);
+    add_potential_old_hole(hr, hr->bottom(), begin_size);
   } else {
     free_region(hr, free_list);
   }
@@ -2994,17 +2996,60 @@ void G1CollectedHeap::set_used(size_t bytes) {
 
 
 void G1CollectedHeap::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
-  _tracker.add_potential_survivor_hole(region, word, size_in_words);
+  Ticks start = Ticks::now();
+  MutexLocker x(G1YoungDataStructure_lock);
+  // Lock list and tree data structure for inserting a hole. 
+  bool success = _tracker.add_potential_survivor_hole(region, word, size_in_words);
+  double duration = (Ticks::now() - start).seconds() * 1000.0;
+  log_trace(gc_testing)("timing:add:young:%.3f:%d", duration, success);
 }
 
 void G1CollectedHeap::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
-  _tracker.add_potential_humongous_hole(region, word, size_in_words);
+  Ticks start = Ticks::now();
+  MutexLocker x(G1OldDataStructure_lock);
+  // Lock list and tree data structure for inserting a hole. 
+  bool success = _tracker.add_potential_humongous_hole(region, word, size_in_words);
+  double duration = (Ticks::now() - start).seconds() * 1000.0;
+  log_trace(gc_testing)("timing:add:humongous:%.3f:%d", duration, success);
 }
 
 void G1CollectedHeap::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
-  _tracker.add_potential_old_hole(region, word, size_in_words);
+  Ticks start = Ticks::now();
+  MutexLocker x(G1OldDataStructure_lock);
+  // Lock list and tree data structure for inserting a hole. 
+  bool success = _tracker.add_potential_old_hole(region, word, size_in_words);
+  double duration = (Ticks::now() - start).seconds() * 1000.0;
+  log_trace(gc_testing)("timing:add:old:%.3f:%d", duration, success);
 }
 
+HeapWord* G1CollectedHeap::find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size) {
+  Ticks start = Ticks::now();
+  MutexLocker x(G1YoungDataStructure_lock);
+  // Lock list and tree data structure for receiving a hole. 
+  HeapWord* result = _tracker.find_young_hole(min_word_size, desired_word_size, actual_word_size);
+  double duration = (Ticks::now() - start).seconds() * 1000.0;
+  log_trace(gc_testing)("timing:find:young:%.3f:%d", duration, result != nullptr);
+  return result;
+}
+
+HeapWord* G1CollectedHeap::find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size) {
+  Ticks start = Ticks::now();
+  MutexLocker x(G1OldDataStructure_lock);
+  // Lock list and tree data structure for receiving a hole. 
+  HeapWord* result = _tracker.find_old_hole(min_word_size, desired_word_size, actual_word_size);
+  if (result != nullptr) _bytes_used_during_gc += *actual_word_size * HeapWordSize;
+  double duration = (Ticks::now() - start).seconds() * 1000.0;
+  log_trace(gc_testing)("timing:find:old:%.3f:%d", duration, result != nullptr);
+  return result;
+}
+
+void G1CollectedHeap::clean_up_young_holes() {
+  _tracker.clean_up_young_holes();
+}
+
+void G1CollectedHeap::clean_up_old_holes() {
+  _tracker.clean_up_old_holes();
+}
 
 
 class RebuildRegionSetsClosure : public G1HeapRegionClosure {

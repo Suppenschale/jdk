@@ -55,56 +55,49 @@ void G1RegionFreeSpaceTracker::initialize() {
 
 }
 
-void G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+bool G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
     
-    bool created;
+    /*bool created;
     size_t* count = _hole_statistics_young.put_if_absent(size_in_words, &created);
-    (*count)++;
+    (*count)++;*/
 
     if (size_in_words < _min_hole_size_young) {
-        return;
+        return false;
     }
-
     
     add_hole_list(_holes_young, region, word, size_in_words);
     if (_use_tree) {        
         add_hole_tree(_root_young, word, size_in_words);
     } 
-    log_trace(gc_testing)("\tAdd hole (YOUNG) at: " PTR_FORMAT ", size = %7lu", p2i(word), size_in_words);
+    return true;
 }
 
-void G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {   
+bool G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {   
     
-    bool created;
+    /*bool created;
     size_t* count = _hole_statistics_humongous.put_if_absent(size_in_words, &created);
-    (*count)++;
+    (*count)++;*/
 
-    log_trace(gc_testing)("Humgouns region with hole of size: %lu", size_in_words);
-
-    add_potential_old_hole(region, word, size_in_words);
+    return add_potential_old_hole(region, word, size_in_words);
 }
 
-void G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {    
+bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {    
    
-    if (!region->is_humongous()) {
+    /*if (!region->is_humongous()) {
         bool created;
         size_t* count = _hole_statistics_old.put_if_absent(size_in_words, &created);
         (*count)++;
-    }
+    }*/
    
     if (size_in_words < _min_hole_size_old) {
-        return;
+        return false;
     }
-
-    //MutexLocker x(Heap_lock);
-    // Lock list and tree data structure for inserting a hole. 
 
     add_hole_list(_holes_old, region, word, size_in_words);
     if (_use_tree) {
         add_hole_tree(_root_old, word, size_in_words);
     } 
-    
-    log_trace(gc_testing)("\tAdd hole (OLD) at: " PTR_FORMAT ", size = %7lu", p2i(word), size_in_words);
+    return true;
 }
 
 
@@ -619,7 +612,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
 
             size_t hole_size = get_size(curr);
 
-            if (is_splittable(min_size, hole_size)) {
+            if (hole_size > min_size && is_splittable(min_size, hole_size)) {
                 return curr;
             } 
 
@@ -651,7 +644,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_best_fitting_hole(HeapWord* &root, size
         // and continue on left subtree
         else {
             G1HeapRegion* region = _g1h->heap_region_containing(curr);
-            if (!region->in_collection_set() && is_splittable(min_size, hole_size)) { // Inverted params, will cause underflow and returns true, causing wrong results
+            if (!region->in_collection_set() && is_splittable(min_size, hole_size)) {
                 best_fitting_hole = curr;
             } 
             curr = get_left(curr);
@@ -661,9 +654,9 @@ HeapWord* G1RegionFreeSpaceTracker::find_best_fitting_hole(HeapWord* &root, size
     return best_fitting_hole;
 }
 
-bool G1RegionFreeSpaceTracker::is_splittable(size_t min_size, size_t hole_size) const { 
+bool G1RegionFreeSpaceTracker::is_splittable(size_t min_size, size_t hole_size) const {
+    assert(hole_size >= min_size, "hole must be larger than min size");
     size_t diff = hole_size - min_size;  
-    assert(diff >= 0, "size different must not be negative");
     return diff == 0 || diff >= CollectedHeap::min_fill_size();
 }
 
@@ -672,6 +665,14 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
                                               size_t desired_word_size,
                                               size_t* actual_word_size,
                                               bool young_gen) {
+
+    if (young_gen) {
+        all_young++;
+        hit_young++;
+    } else {
+        all_old++;
+        hit_old++;
+    }
 
     if (_use_tree) {
         HeapWord* hole = find_best_fitting_hole(young_gen? _root_young : _root_old, desired_word_size);
@@ -700,27 +701,25 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
         }
     }
 
+    if (young_gen) {
+        hit_young--;
+    } else {
+        hit_old--;
+    }
     return nullptr;
 }
 
 
-HeapWord* G1RegionFreeSpaceTracker::find_hole_young(size_t min_word_size,
+HeapWord* G1RegionFreeSpaceTracker::find_young_hole(size_t min_word_size,
                                                     size_t desired_word_size,
                                                     size_t* actual_word_size) {
 
-    log_trace(gc_testing)("Find hole (YOUNG) of size %lu", desired_word_size);
     return find_hole(min_word_size, desired_word_size, actual_word_size, true);
 }
 
-HeapWord* G1RegionFreeSpaceTracker::find_hole_old(size_t min_word_size,
+HeapWord* G1RegionFreeSpaceTracker::find_old_hole(size_t min_word_size,
                                                   size_t desired_word_size,
                                                   size_t* actual_word_size) {
-
-    log_trace(gc_testing)("Find hole (OLD) of size %lu (%lu)", desired_word_size, min_word_size);
-
-
-    //MutexLocker x(Heap_lock);
-    // Lock list and tree data structure for receiving a hole. 
 
     return find_hole(min_word_size, desired_word_size, actual_word_size, false);
 }
@@ -745,7 +744,6 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     // If the hole is a gap between top and end, then move the top
     if (region->top() == hole) {
         region->set_top(region->top() + want_to_allocate);
-        log_trace(gc_testing)("Top must be updated");
     }         
     // If not, the hole is on the left-hand side of top.
     // Therefore, if there is any remaining rest, it must be filled
@@ -767,9 +765,10 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     // should only be called during GC, for old gen/humongous holes.
     if (!young_gen) {
       G1ConcurrentMark* cm = _g1h->concurrent_mark();
-      cm->add_root_region_range(hole, hole + want_to_allocate);
+      MemRegion mr(hole, hole + want_to_allocate);
+      cm->add_root_region_range(mr);
       if (cm->cm_thread()->in_progress()) {
-        cm->add_to_allocation_set(hole);  
+        cm->add_to_allocation_tree(mr);  
       }
     }
 
@@ -779,8 +778,7 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
 }
 
 
-void G1RegionFreeSpaceTracker::clean_up_holes_young() {
-    log_trace(gc_testing)("Clean up holes young");
+void G1RegionFreeSpaceTracker::clean_up_young_holes() {
     for (uint i = 0; i < _size; i++) {
         _holes_young[i] = nullptr;
     }
@@ -789,8 +787,7 @@ void G1RegionFreeSpaceTracker::clean_up_holes_young() {
     }
 }
 
-void G1RegionFreeSpaceTracker::clean_up_holes_old() {
-    log_trace(gc_testing)("Clean up holes old");
+void G1RegionFreeSpaceTracker::clean_up_old_holes() {
     for (uint i = 0; i < _size; i++) {
         _holes_old[i] = nullptr;
     }
@@ -848,20 +845,73 @@ void G1RegionFreeSpaceTracker::inorder_traversal(HeapWord* root) {
 
 }
 
-void G1RegionFreeSpaceTracker::print_statistics() const {
 
+void G1RegionFreeSpaceTracker::increment_young_min_statistic(size_t size_in_words) {
+    bool created;
+    size_t* count = _object_min_statistics_young.put_if_absent(size_in_words, &created);
+    (*count)++;
+}
+
+void G1RegionFreeSpaceTracker::increment_young_desired_statistic(size_t size_in_words) {
+    bool created;
+    size_t* count = _object_desired_statistics_young.put_if_absent(size_in_words, &created);
+    (*count)++;
+}
+
+void G1RegionFreeSpaceTracker::increment_old_min_statistic(size_t size_in_words) {
+    bool created;
+    size_t* count = _object_min_statistics_old.put_if_absent(size_in_words, &created);
+    (*count)++;
+}
+
+void G1RegionFreeSpaceTracker::increment_old_desired_statistic(size_t size_in_words) {
+    bool created;
+    size_t* count = _object_desired_statistics_old.put_if_absent(size_in_words, &created);
+    (*count)++;
+}
+
+void G1RegionFreeSpaceTracker::print_statistics() const {
+/*
     log_trace(gc_testing)("Young Holes Statistics: ");
     _hole_statistics_young.iterate_all([](size_t key, size_t value) {
-        log_trace(gc_testing)("Hole of size : %ld (count : %ld)", key, value);
+        log_trace(gc_testing)("Collect:young_hole;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
     });
 
     log_trace(gc_testing)("Old Holes Statistics: ");
     _hole_statistics_old.iterate_all([](size_t key, size_t value) {
-        log_trace(gc_testing)("Hole of size : %ld (count : %ld)", key, value);
+        log_trace(gc_testing)("Collect:old_hole;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
     });
 
     log_trace(gc_testing)("Humongous Holes Statistics: ");
      _hole_statistics_humongous.iterate_all([](size_t key, size_t value) {
-        log_trace(gc_testing)("Hole of size : %ld (count : %ld)", key, value);
+        log_trace(gc_testing)("Collect:humongous_hole;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
     });
+*//*
+    log_trace(gc_testing)("Young Min Object Statistics: ");
+    _object_min_statistics_young.iterate_all([](size_t key, size_t value) {
+        log_trace(gc_testing)("Collect:young_object_min;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
+    });
+
+    log_trace(gc_testing)("Young Desired Object Statistics: ");
+    _object_desired_statistics_young.iterate_all([](size_t key, size_t value) {
+        log_trace(gc_testing)("Collect:young_object_desired;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
+    });
+
+    log_trace(gc_testing)("Old Min Object Statistics: ");
+    _object_min_statistics_old.iterate_all([](size_t key, size_t value) {
+        log_trace(gc_testing)("Collect:old_object_min;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
+    });
+
+    log_trace(gc_testing)("Old Desired Object Statistics: ");
+    _object_desired_statistics_old.iterate_all([](size_t key, size_t value) {
+        log_trace(gc_testing)("Collect:old_object_desired;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
+    });*/
+
+    if (all_young > 0) {
+        log_trace(gc_testing)("Hit Ratio Young: %.4f Percent(%ld / %ld)", ((double)hit_young) / all_young * 100.0f, hit_young, all_young);
+    }
+    if (all_old > 0) {
+        log_trace(gc_testing)("Hit Ratio Old: %.4f Percent (%ld / %ld)", ((double)hit_old) / all_old * 100.0f, hit_old, all_old);
+    }
+
 }

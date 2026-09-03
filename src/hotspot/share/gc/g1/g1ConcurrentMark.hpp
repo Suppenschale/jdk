@@ -552,17 +552,27 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // True when Remark pause selected regions for rebuilding.
   bool _needs_remembered_set_rebuild;
 
+private:
 
-  static const int INITIAL_TABLE_SIZE = 15889; // prime number
-  static const int MAX_TABLE_SIZE     = 1000000;
+  struct MemRegionComparator {
+    // Assume that no MemRegion can overlap
+    static RBTreeOrdering cmp(HeapWord* a, HeapWord* b) {
+      if (a < b) return RBTreeOrdering::LT;
+      if (a > b) return RBTreeOrdering::GT;
+      return RBTreeOrdering::EQ;
+    }
+  };
 
-  typedef ResizeableHashTable<HeapWord*, bool, AnyObj::C_HEAP, mtGC> AllocationSet;
+  typedef RBTreeCHeap<HeapWord*, MemRegion, MemRegionComparator, mtGC> AllocationTree; 
 
-  // Set of all objects allocated to the left of any TAMS
-  AllocationSet _left_allocated_objects_set;
+  // Tree of all MemRegions allocated to the left of any TAMS
+  AllocationTree _left_allocated_objects_tree;
 public:
-  // Add an object to the allocation set
-  void add_to_allocation_set(HeapWord* word);
+  // Add a region to AllocationTree
+  void add_to_allocation_tree(MemRegion mr);
+
+  // Check if the word is part of any MemRegion interval
+  bool check_left_allocated_objects(HeapWord* word) const;
 
   // To be called when an object is marked the first time, e.g. after a successful
   // mark_in_bitmap call. Updates various statistics data.
@@ -668,7 +678,7 @@ public:
   void scan_root_regions();
   bool wait_until_root_region_scan_finished();
   void add_root_region(G1HeapRegion* r);
-  void add_root_region_range(HeapWord* start, HeapWord* end);
+  void add_root_region_range(MemRegion mr);
   bool is_root_region(G1HeapRegion* r);
   void root_region_scan_abort_and_wait();
 

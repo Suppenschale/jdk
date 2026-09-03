@@ -39,6 +39,7 @@
 #include "gc/shared/suspendibleThreadSet.hpp"
 #include "gc/shared/taskqueue.inline.hpp"
 #include "utilities/bitMap.inline.hpp"
+#include "utilities/rbTree.inline.hpp"
 
 inline bool G1CMIsAliveClosure::do_object_b(oop obj) {
   // Check whether the passed in object is null. During discovery the referent
@@ -207,7 +208,7 @@ inline bool G1ConcurrentMark::obj_allocated_since_mark_start(oop obj) const {
   uint const region = _g1h->addr_to_region(obj);
   HeapWord* word = cast_from_oop<HeapWord*>(obj);
   assert(region < _g1h->max_num_regions(), "obj " PTR_FORMAT " outside heap %u", p2i(obj), region);
-  return word >= top_at_mark_start(region) || _left_allocated_objects_set.contains(word);
+  return word >= top_at_mark_start(region) || check_left_allocated_objects(word);
 }
 
 inline HeapWord* G1ConcurrentMark::top_at_rebuild_start(G1HeapRegion* r) const {
@@ -233,8 +234,8 @@ inline void G1CMTask::inc_incoming_refs(oop const obj) {
   _mark_stats_cache.inc_incoming_refs(_g1h->addr_to_region(obj));
 }
 
-inline void G1ConcurrentMark::add_to_allocation_set(HeapWord* word) {
-  _left_allocated_objects_set.put(word, true);
+inline void G1ConcurrentMark::add_to_allocation_tree(MemRegion mr) {
+  _left_allocated_objects_tree.upsert(mr.start(), mr);
 }
 
 inline void G1ConcurrentMark::add_to_liveness(uint worker_id, oop const obj, size_t size) {

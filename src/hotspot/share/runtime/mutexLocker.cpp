@@ -107,6 +107,8 @@ Mutex*   G1ReviseYoungLength_lock     = nullptr;
 Monitor* G1RootRegionScan_lock        = nullptr;
 Mutex*   G1RareEvent_lock             = nullptr;
 Mutex*   G1Uncommit_lock              = nullptr;
+Mutex*   G1YoungDataStructure_lock    = nullptr;
+Mutex*   G1OldDataStructure_lock      = nullptr;
 #endif
 
 Mutex*   Management_lock              = nullptr;
@@ -217,6 +219,8 @@ void mutex_init() {
     MUTEX_DEFN(G1OldSets_lock                , PaddedMutex  , nosafepoint);
     MUTEX_DEFN(G1RootRegionScan_lock         , PaddedMonitor, nosafepoint-1);
     MUTEX_DEFN(G1Uncommit_lock               , PaddedMutex  , service-2);
+    MUTEX_DEFL(G1YoungDataStructure_lock     , PaddedMutex  , event);
+    MUTEX_DEFL(G1OldDataStructure_lock       , PaddedMutex  , event);
   }
 #endif
 

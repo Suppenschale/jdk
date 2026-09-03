@@ -269,6 +269,7 @@ HeapWord* G1Allocator::survivor_attempt_allocation(uint node_index,
 HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
                                               size_t desired_word_size,
                                               size_t* actual_word_size) {
+                                                
   assert(!_g1h->is_humongous(desired_word_size),
          "we should not be seeing humongous-size allocations in this path");
 
@@ -279,9 +280,9 @@ HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
 
     if (UseNewCode3) {      
-      result = _g1h->_tracker.find_hole_old(min_word_size, 
-                                            desired_word_size, 
-                                            actual_word_size); 
+      result = _g1h->find_old_hole(min_word_size, 
+                                   desired_word_size, 
+                                   actual_word_size); 
     }
 
     // Multiple threads may have queued at the FreeList_lock above after checking whether there

@@ -496,8 +496,8 @@ void G1FullCollector::phase5_reset_metadata() {
   G1FullGCResetMetadataTask task(this);
   run_task(&task);
 
-  _heap->_tracker.clean_up_holes_young();
-  _heap->_tracker.clean_up_holes_old();
+  _heap->clean_up_young_holes();
+  _heap->clean_up_old_holes();
 }
 
 void G1FullCollector::restore_marks() {

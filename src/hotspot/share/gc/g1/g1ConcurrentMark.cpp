@@ -527,7 +527,7 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
   _top_at_mark_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
   _top_at_rebuild_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
   _needs_remembered_set_rebuild(false),
-  _left_allocated_objects_set(INITIAL_TABLE_SIZE, MAX_TABLE_SIZE)
+  _left_allocated_objects_tree()
 {
   assert(G1CGC_lock != nullptr, "CGC_lock must be initialized");
 
@@ -565,6 +565,11 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
   }
 
   reset_at_marking_complete();
+}
+
+bool G1ConcurrentMark::check_left_allocated_objects(HeapWord* word) const {
+  RBNode<HeapWord*, MemRegion>* node = _left_allocated_objects_tree.closest_leq(word);
+  return node != nullptr && node->val().contains(word);
 }
 
 void G1ConcurrentMark::reset() {
@@ -815,8 +820,8 @@ void G1ConcurrentMark::cleanup_for_next_mark() {
 
   clear_bitmap(_concurrent_workers, true);
 
-  // Clears sets of objects, allocated during marking
-  _left_allocated_objects_set.clear();
+  // Clears tree of MemRegions allocated during marking
+  _left_allocated_objects_tree.remove_all();
 
   // Repeat the asserts from above.
   guarantee(cm_thread()->in_progress(), "invariant");
@@ -1106,8 +1111,8 @@ void G1ConcurrentMark::add_root_region(G1HeapRegion* r) {
   root_regions()->add(top_at_mark_start(r), r->top());
 }
 
-void G1ConcurrentMark::add_root_region_range(HeapWord* start, HeapWord* end) {
-  root_regions()->add(start, end);
+void G1ConcurrentMark::add_root_region_range(MemRegion mr) {
+  root_regions()->add(mr.start(), mr.end());
 }
 
 bool G1ConcurrentMark::is_root_region(G1HeapRegion* r) {

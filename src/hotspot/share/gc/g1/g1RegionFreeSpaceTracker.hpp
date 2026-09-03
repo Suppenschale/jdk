@@ -37,19 +37,47 @@ class G1RegionFreeSpaceTracker {
         bool _use_tree;
 
         HashTable<size_t, size_t,
-                    256,
+                    65536,
                     AnyObj::C_HEAP,
                     mtGC> _hole_statistics_young;
 
         HashTable<size_t, size_t,
-                    256,
+                    65536,
                     AnyObj::C_HEAP,
                     mtGC> _hole_statistics_old;
 
         HashTable<size_t, size_t,
-                    256,
+                    65536,
                     AnyObj::C_HEAP,
                     mtGC> _hole_statistics_humongous;
+
+        HashTable<size_t, size_t,
+                    65536,
+                    AnyObj::C_HEAP,
+                    mtGC> _object_min_statistics_young;
+
+        HashTable<size_t, size_t,
+                    65536,
+                    AnyObj::C_HEAP,
+                    mtGC> _object_desired_statistics_young;
+
+
+        HashTable<size_t, size_t,
+                    65536,
+                    AnyObj::C_HEAP,
+                    mtGC> _object_min_statistics_old;
+
+        HashTable<size_t, size_t,
+                    65536,
+                    AnyObj::C_HEAP,
+                    mtGC> _object_desired_statistics_old;
+
+
+        size_t hit_young;
+        size_t all_young;
+
+        size_t hit_old;
+        size_t all_old;
 
 
     public:
@@ -57,9 +85,9 @@ class G1RegionFreeSpaceTracker {
 
         void initialize();
 
-        void add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
-        void add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
-        void add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+        bool add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+        bool add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
+        bool add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
 
         void set_hole_list(HeapWord* word, size_t size, HeapWord* next);
         ListHole* get_hole_list(HeapWord* word) const;
@@ -114,18 +142,22 @@ class G1RegionFreeSpaceTracker {
         bool is_splittable(size_t min_size, size_t hole_size) const;
 
         HeapWord* find_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, bool young_gen);
-        HeapWord* find_hole_young(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
-        HeapWord* find_hole_old(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
+        HeapWord* find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
+        HeapWord* find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
 
         HeapWord* split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen);
 
-        void clean_up_holes_young();
-        void clean_up_holes_old();
+        void clean_up_young_holes();
+        void clean_up_old_holes();
         void remove_region(G1HeapRegion* region);
 
         void dump_tree_node(HeapWord* word);
         void inorder_traversal(HeapWord* root);
 
+        void increment_young_min_statistic(size_t size_in_words);
+        void increment_young_desired_statistic(size_t size_in_words);
+        void increment_old_min_statistic(size_t size_in_words);
+        void increment_old_desired_statistic(size_t size_in_words);
         void print_statistics() const;
 
 };

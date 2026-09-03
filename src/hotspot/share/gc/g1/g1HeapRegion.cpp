@@ -251,8 +251,7 @@ HeapWord* G1HeapRegion::old_objects_start() const {
 }
 
 void G1HeapRegion::set_old_objects_start(HeapWord* old_objects_start) {
-  assert(is_continues_humongous(), "tail only last humongous");
-  _old_objects_start = old_objects_start; //top();
+  _old_objects_start = old_objects_start;
 }
 
 void G1HeapRegion::clear_old_objects_start() {

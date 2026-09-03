@@ -172,9 +172,6 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         hr->fill_range_with_dead_objects(addr, scrub_end);
         
         if (UseNewCode) {
-
-          MutexLocker x(Heap_lock);
-
           G1CollectedHeap::heap()->add_potential_old_hole(hr, addr, pointer_delta(scrub_end, addr));
         } 
         // Return the next object to handle.
@@ -253,7 +250,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         HeapWord* limit = _cm->top_at_rebuild_start(hr);
         while (start < limit) {
           start += scan_object(hr, start);
-
+          log_trace(gc_testing)("Scanning in tail");
           if (yield_if_necessary(hr)) {
             return;
           }
