@@ -97,7 +97,7 @@ inline bool G1DetermineCompactionQueueClosure::do_heap_region(G1HeapRegion* hr) 
     assert(_collector->is_skip_compacting(hr->hrm_index()), "pinned region %u must be skip_compacting", hr->hrm_index());
     log_trace(gc, phases)("Phase 2: skip compaction region index: %u (%s), has pinned objects",
                           hr->hrm_index(), hr->get_short_type_str());
-  } else if (hr->is_humongous()) {
+  } else if (hr->is_humongous() && !hr->has_humongous_tail()) { // fixme: probably wrong
     oop obj = cast_to_oop(hr->humongous_start_region()->bottom());
     bool is_empty = !_collector->mark_bitmap()->is_marked(obj);
     if (is_empty) {

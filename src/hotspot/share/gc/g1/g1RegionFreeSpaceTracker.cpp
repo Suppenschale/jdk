@@ -16,8 +16,7 @@ G1RegionFreeSpaceTracker::G1RegionFreeSpaceTracker(G1CollectedHeap* heap) :
     _root_old(nullptr),
     _size(0),
     _min_hole_size_young(0),
-    _min_hole_size_old(0),
-    _use_tree(false)
+    _min_hole_size_old(0)
 {
     log_trace(gc_testing)("Init G1RegionFreeSpaceTracker");
 
@@ -41,7 +40,7 @@ void G1RegionFreeSpaceTracker::initialize() {
 
     log_trace(gc_testing)("Create hole array (%u regions)", _g1h->max_num_regions());
 
-    if (_use_tree) {
+    if (use_tree()) {
         // Use tree structure
         size_t words_for_struct = (sizeof(TreeHole) + sizeof(HeapWord) - 1) / sizeof(HeapWord);
         _min_hole_size_young = CollectedHeap::min_fill_size() + words_for_struct + 10; // arbitrary bonus offset
@@ -55,6 +54,22 @@ void G1RegionFreeSpaceTracker::initialize() {
 
 }
 
+bool G1RegionFreeSpaceTracker::use_list() const {
+    return G1HoleDataStructure == 0;
+}
+
+bool G1RegionFreeSpaceTracker::use_bst() const {
+    return G1HoleDataStructure == 1;
+}
+
+bool G1RegionFreeSpaceTracker::use_rbt() const {
+    return G1HoleDataStructure == 2;
+}
+
+bool G1RegionFreeSpaceTracker::use_tree() const {
+    return G1HoleDataStructure > 0;
+}
+
 bool G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
     
     /*bool created;
@@ -66,7 +81,7 @@ bool G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region,
     }
     
     add_hole_list(_holes_young, region, word, size_in_words);
-    if (_use_tree) {        
+    if (use_tree()) {        
         add_hole_tree(_root_young, word, size_in_words);
     } 
     return true;
@@ -81,20 +96,16 @@ bool G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region
     return add_potential_old_hole(region, word, size_in_words);
 }
 
-bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {    
-   
-    /*if (!region->is_humongous()) {
-        bool created;
-        size_t* count = _hole_statistics_old.put_if_absent(size_in_words, &created);
-        (*count)++;
-    }*/
-   
+bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+    if (region->has_pinned_objects()) { // Reject pinned regions: they may contain valid objects anywhere (actually it would be possible, but then would need to reject at allocation side. This is more complicated.)
+        return false;
+    }
     if (size_in_words < _min_hole_size_old) {
         return false;
     }
 
     add_hole_list(_holes_old, region, word, size_in_words);
-    if (_use_tree) {
+    if (use_tree()) {
         add_hole_tree(_root_old, word, size_in_words);
     } 
     return true;
@@ -147,6 +158,7 @@ void G1RegionFreeSpaceTracker::set_parent(HeapWord* word, HeapWord* parent) {
 }
 
 HeapWord* G1RegionFreeSpaceTracker::get_parent(HeapWord* word) const {
+    if (word == nullptr ) return nullptr;
     return get_hole_tree(word)->parent;
 }
 
@@ -156,6 +168,7 @@ void G1RegionFreeSpaceTracker::set_left(HeapWord* word, HeapWord* left) {
 }
 
 HeapWord* G1RegionFreeSpaceTracker::get_left(HeapWord* word) const {
+    if (word == nullptr ) return nullptr;
     return get_hole_tree(word)->left;
 }
 
@@ -165,6 +178,7 @@ void G1RegionFreeSpaceTracker::set_right(HeapWord* word, HeapWord* right) {
 }
 
 HeapWord* G1RegionFreeSpaceTracker::get_right(HeapWord* word) const {
+    if (word == nullptr ) return nullptr;
     return get_hole_tree(word)->right;
 }
 
@@ -251,7 +265,7 @@ void G1RegionFreeSpaceTracker::add_hole_tree(HeapWord* &root, HeapWord* word, si
     set_right(word, nullptr);
 
     // If parent is red, tree might need to be fixed
-    if (is_red(get_parent(word))) {
+    if (use_rbt() && is_red(get_parent(word))) {
         rb_insert_fixup(root, word);
     }
 }
@@ -291,12 +305,20 @@ bool G1RegionFreeSpaceTracker::is_right(HeapWord* word) const {
 
 void G1RegionFreeSpaceTracker::rb_insert_fixup(HeapWord* &root, HeapWord* word) {
 
+    if (root == nullptr || word == nullptr) return;
+
     HeapWord* curr = word;
 
     while (is_red(get_parent(curr))) {
         
         HeapWord* parent = get_parent(curr);
         HeapWord* grandparent = get_parent(parent);
+
+        if (grandparent == nullptr) {
+            log_error(gc_testing)("grandparent is null in insert fixup");
+            break;
+        }
+
         bool parent_is_left = (get_left(grandparent) == parent);
         bool curr_is_left = (get_left(parent) == curr);
         HeapWord* uncle = parent_is_left? get_right(grandparent) : get_left(grandparent);
@@ -367,9 +389,16 @@ void G1RegionFreeSpaceTracker::rb_insert_fixup(HeapWord* &root, HeapWord* word) 
 
 void G1RegionFreeSpaceTracker::rb_remove_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent) {
 
+    if (root == nullptr) return;
+
     HeapWord* w = nullptr;
 
     while (x != root && is_black(x)) {
+
+        if (x_parent == nullptr && x != root) {
+            log_error(gc_testing)("x_parent is null in remove fixup");
+            break;
+        }
 
         if (x == get_left(x_parent)) {
 
@@ -449,7 +478,20 @@ void G1RegionFreeSpaceTracker::rb_remove_fixup(HeapWord* &root, HeapWord* x, Hea
 */
 void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
 
+    if (x == nullptr) {
+        log_error(gc_testing)("left_rotate called with null x");
+        return;
+    }
+
     HeapWord* y = get_right(x);
+
+    if (y == nullptr) {
+        log_error(gc_testing)("left_rotate called on node without right child");
+        log_error(gc_testing)("x=" PTR_FORMAT ", size=%ld, parent=" PTR_FORMAT, 
+                                p2i(x), get_size(x), p2i(get_parent(x)));
+    return;
+    }
+
     HeapWord* z = get_parent(x);
     HeapWord* a = get_left(y);
 
@@ -484,7 +526,20 @@ void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
 */
 void G1RegionFreeSpaceTracker::right_rotate(HeapWord* &root, HeapWord* x) {
 
+    if (x == nullptr) {
+        log_error(gc_testing)("right_rotate called with null x");
+        return;
+    }
+
     HeapWord* y = get_left(x);
+
+    if (y == nullptr) {
+        log_error(gc_testing)("right_rotate called on node without left child");
+        log_error(gc_testing)("x=" PTR_FORMAT ", size=%ld, parent=" PTR_FORMAT, 
+                                p2i(x), get_size(x), p2i(get_parent(x)));
+        return;
+    }
+
     HeapWord* z = get_parent(x);
     HeapWord* b = get_right(y);
 
@@ -579,7 +634,7 @@ HeapWord* G1RegionFreeSpaceTracker::remove_hole_tree(HeapWord* &root, HeapWord* 
     }
 
     // Fix RB properties if original color was black
-    if (!original_color) {
+    if (use_rbt() && !original_color) {
         rb_remove_fixup(root, replace, replace_parent);
     }
 
@@ -606,13 +661,22 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
 
         HeapWord* curr = list[i]; 
 
-        if (curr == nullptr || _g1h->heap_region_containing(curr)->in_collection_set()) continue;
+        if (curr == nullptr) {
+            continue;
+        }
+        G1HeapRegion* r = _g1h->heap_region_containing(curr);
+        // Do not allow allocation into pinned regions.
+        // Also continue if region is part of collection set (and not young) 
+        bool check = r->has_pinned_objects() || (r->in_collection_set() && !r->is_young());
+        if (r->has_pinned_objects()) { 
+            continue;
+        }
 
         while (curr != nullptr) {
 
             size_t hole_size = get_size(curr);
 
-            if (hole_size > min_size && is_splittable(min_size, hole_size)) {
+            if (hole_size >= min_size && is_splittable(min_size, hole_size)) {
                 return curr;
             } 
 
@@ -628,6 +692,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_best_fitting_hole(HeapWord* &root, size
     HeapWord* curr = root;
 
     HeapWord* best_fitting_hole = nullptr;
+    uint depth = 0;
     while (curr != nullptr) {
 
         size_t hole_size = get_size(curr);
@@ -644,10 +709,17 @@ HeapWord* G1RegionFreeSpaceTracker::find_best_fitting_hole(HeapWord* &root, size
         // and continue on left subtree
         else {
             G1HeapRegion* region = _g1h->heap_region_containing(curr);
-            if (!region->in_collection_set() && is_splittable(min_size, hole_size)) {
+            bool check = !region->has_pinned_objects() && 
+                         (region->is_young() || !region->in_collection_set()) && 
+                         is_splittable(min_size, hole_size);
+            if (check) {
                 best_fitting_hole = curr;
             } 
             curr = get_left(curr);
+        }
+        depth++;
+        if (use_bst() && depth > MAX_DEPTH) {
+            return best_fitting_hole;
         }
     }
 
@@ -674,7 +746,8 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
         hit_old++;
     }
 
-    if (_use_tree) {
+    if (use_tree()) {
+
         HeapWord* hole = find_best_fitting_hole(young_gen? _root_young : _root_old, desired_word_size);
 
         if (hole != nullptr) {
@@ -688,14 +761,13 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
         }
 
     } else {
-        HeapWord* hole = find_first_fitting_hole(young_gen? _holes_young : _holes_old, desired_word_size);
-
+        HeapWord** root = young_gen ? _holes_young : _holes_old;
+        HeapWord* hole = find_first_fitting_hole(root, desired_word_size);
         if (hole != nullptr) {
             return split_hole(hole, desired_word_size, actual_word_size, young_gen);
         }
 
-        hole = find_first_fitting_hole(young_gen? _holes_young : _holes_old, min_word_size);
-
+        hole = find_first_fitting_hole(root, min_word_size);
         if (hole != nullptr) {
             return split_hole(hole, min_word_size, actual_word_size, young_gen);
         }
@@ -713,14 +785,14 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
 HeapWord* G1RegionFreeSpaceTracker::find_young_hole(size_t min_word_size,
                                                     size_t desired_word_size,
                                                     size_t* actual_word_size) {
-
+    assert(!SafepointSynchronize::is_at_safepoint(), "do not reuse survivor holes at safepoint");
     return find_hole(min_word_size, desired_word_size, actual_word_size, true);
 }
 
 HeapWord* G1RegionFreeSpaceTracker::find_old_hole(size_t min_word_size,
                                                   size_t desired_word_size,
                                                   size_t* actual_word_size) {
-
+    assert(SafepointSynchronize::is_at_safepoint(), "do not reuse old holes outside safepoint");
     return find_hole(min_word_size, desired_word_size, actual_word_size, false);
 }
 
@@ -729,8 +801,7 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     G1HeapRegion* region = _g1h->heap_region_containing(hole);
 
     remove_hole_list(young_gen? _holes_young : _holes_old, region, hole);
-    if (_use_tree) {        
-        log_trace(gc_testing)("Remove hole from tree");
+    if (use_tree()) {        
         remove_hole_tree(young_gen? _root_young : _root_old, hole);
     } 
 
@@ -766,7 +837,9 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     if (!young_gen) {
       G1ConcurrentMark* cm = _g1h->concurrent_mark();
       MemRegion mr(hole, hole + want_to_allocate);
-      cm->add_root_region_range(mr);
+      if (_g1h->collector_state()->in_concurrent_start_gc()) {
+        cm->add_root_region_range(mr);
+      }
       if (cm->cm_thread()->in_progress()) {
         cm->add_to_allocation_tree(mr);  
       }
@@ -782,7 +855,7 @@ void G1RegionFreeSpaceTracker::clean_up_young_holes() {
     for (uint i = 0; i < _size; i++) {
         _holes_young[i] = nullptr;
     }
-    if (_use_tree) {        
+    if (use_tree()) {        
         _root_young = nullptr;
     }
 }
@@ -791,13 +864,13 @@ void G1RegionFreeSpaceTracker::clean_up_old_holes() {
     for (uint i = 0; i < _size; i++) {
         _holes_old[i] = nullptr;
     }
-    if (_use_tree) {
+    if (use_tree()) {
         _root_old = nullptr;
     } 
 }
 
 void G1RegionFreeSpaceTracker::remove_region(G1HeapRegion* region) {
-    if (_use_tree) {
+    if (use_tree()) {
         
         bool young_gen = region->is_young();
 

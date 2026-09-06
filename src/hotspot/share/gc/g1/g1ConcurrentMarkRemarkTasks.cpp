@@ -100,7 +100,7 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
       if (is_live) {
         const bool selected_for_rebuild = tracker->update_humongous_before_rebuild(hr);
         auto on_humongous_region = [&] (G1HeapRegion* hr) {
-          if (selected_for_rebuild) {
+          if (selected_for_rebuild || (hr->is_continues_humongous() && hr->has_humongous_tail())) { // FIXME: Check if we actually ever want to reclaim space in humongous tail regions; wrong!
             _num_selected_for_rebuild++;
           }
           _cm->update_top_at_rebuild_start(hr);

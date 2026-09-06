@@ -273,7 +273,7 @@ inline void G1HeapRegion::note_end_of_marking(HeapWord* top_at_mark_start, size_
     _incoming_refs = incoming_refs;
   }
 
-  if (needs_scrubbing()) {
+  if (needs_scrubbing() || has_humongous_tail()) {
     _parsable_bottom = top_at_mark_start;
   }
 }

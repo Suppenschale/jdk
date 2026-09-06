@@ -377,6 +377,20 @@
           "Also schedule all available optional groups for evacuation "     \
           "regardless of timing.")                                          \
                                                                             \
+  product(bool, G1UseSurvivorHoles, false,                                  \
+          "Use survivor holes.")                                            \
+                                                                            \
+  product(bool, G1UseHumongousHoles, false,                                 \
+          "Use humongous holes.")                                           \
+                                                                            \
+  product(bool, G1UseOldHoles, false,                                       \
+          "Use old region holes.")                                          \
+                                                                            \
+  product(uint, G1HoleDataStructure, 0,                                     \
+          "Select which data structure for storing holes"                   \
+          "is used (List : 0, BST : 1, RBT : 2)")                           \
+          range(0, 2)
+                                                                            \
   GC_G1_EVACUATION_FAILURE_FLAGS(develop,                                   \
                     develop_pd,                                             \
                     product,                                                \

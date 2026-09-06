@@ -34,7 +34,7 @@ class G1RegionFreeSpaceTracker {
         size_t _min_hole_size_young;
         size_t _min_hole_size_old;
 
-        bool _use_tree;
+        uint MAX_DEPTH = 20;
 
         HashTable<size_t, size_t,
                     65536,
@@ -84,6 +84,11 @@ class G1RegionFreeSpaceTracker {
         G1RegionFreeSpaceTracker(G1CollectedHeap* heap);
 
         void initialize();
+
+        bool use_list() const;
+        bool use_bst() const;
+        bool use_rbt() const;
+        bool use_tree() const;
 
         bool add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
         bool add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);

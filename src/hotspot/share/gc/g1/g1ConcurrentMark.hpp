@@ -38,6 +38,7 @@
 #include "gc/shared/workerUtils.hpp"
 #include "memory/allocation.hpp"
 #include "utilities/compilerWarnings.hpp"
+#include "utilities/growableArray.hpp"
 #include "utilities/numberSeq.hpp"
 
 class ConcurrentGCTimer;
@@ -318,10 +319,8 @@ private:
 // of the GC, and any objects copied into the old gen during GC.
 class G1CMRootMemRegions {
   // The set of root MemRegions.
-  GrowableArray<MemRegion>* _root_regions;
+  GrowableArrayCHeap<MemRegion, mtGC> _root_regions;
   size_t const _max_regions;
-
-  volatile size_t _num_root_regions; // Actual number of root regions.
 
   volatile size_t _claimed_root_regions; // Number of root regions currently claimed.
 

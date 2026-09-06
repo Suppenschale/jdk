@@ -279,7 +279,7 @@ HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
   if (result == nullptr && !old_is_full()) { // and there are no holes left...
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
 
-    if (UseNewCode3) {      
+    if (G1UseHumongousHoles) {
       result = _g1h->find_old_hole(min_word_size, 
                                    desired_word_size, 
                                    actual_word_size); 

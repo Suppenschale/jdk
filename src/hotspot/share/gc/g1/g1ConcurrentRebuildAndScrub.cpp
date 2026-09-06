@@ -163,7 +163,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
     // Scan or scrub depending on if addr is marked.
     HeapWord* scan_or_scrub(G1HeapRegion* hr, HeapWord* addr, HeapWord* limit) {
-      if (_bitmap->is_marked(addr)) {
+      if (_bitmap->is_marked(addr) || _cm->check_left_allocated_objects(addr)) {
         //  Live object, need to scan to rebuild remembered sets for this object.
         return addr + scan_object(hr, addr);
       } else {
@@ -171,7 +171,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         HeapWord* scrub_end = _bitmap->get_next_marked_addr(addr, limit);
         hr->fill_range_with_dead_objects(addr, scrub_end);
         
-        if (UseNewCode) {
+        if ((G1UseHumongousHoles && hr->is_continues_humongous()) || (G1UseOldHoles && hr->is_old())) {
           G1CollectedHeap::heap()->add_potential_old_hole(hr, addr, pointer_delta(scrub_end, addr));
         } 
         // Return the next object to handle.
@@ -180,7 +180,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
     }
 
     // Scan and scrub the given region to tars.
-    void scan_and_scrub_region(G1HeapRegion* hr, HeapWord* const pb) {
+    void scan_and_scrub_region(G1HeapRegion* hr, HeapWord* const bottom, HeapWord* const pb) {
       assert(should_rebuild_or_scrub(hr), "must be");
 
       log_trace(gc, marking)("Scrub and rebuild region: " HR_FORMAT " pb: " PTR_FORMAT " TARS: " PTR_FORMAT " TAMS: " PTR_FORMAT,
@@ -188,7 +188,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
       {
         // Step 1: Scan the given region from bottom to parsable_bottom.
-        HeapWord* start = hr->bottom();
+        HeapWord* start = bottom;
         HeapWord* limit = pb;
         while (start < limit) {
           start = scan_or_scrub(hr, start, limit);
@@ -244,17 +244,10 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
       scan_large_object(hr, humongous, mr);
 
-      // Also needs to scan the tail allocations, e.g. allocated-into area for remembered sets
+      // Also needs to scan+scrub the tail allocations, e.g. allocated-into area for remembered sets
       if (hr->has_humongous_tail()) {
         HeapWord* start = hr->old_objects_start();
-        HeapWord* limit = _cm->top_at_rebuild_start(hr);
-        while (start < limit) {
-          start += scan_object(hr, start);
-          log_trace(gc_testing)("Scanning in tail");
-          if (yield_if_necessary(hr)) {
-            return;
-          }
-        }
+        scan_and_scrub_region(hr, start, pb);
       }
     }
 
@@ -286,7 +279,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
       if (hr->needs_scrubbing()) {
         // This is a region with potentially unparsable (dead) objects.
-        scan_and_scrub_region(hr, pb);
+        scan_and_scrub_region(hr, hr->bottom(), pb);
       } else {
         assert(hr->is_humongous(), "must be, but %u is %s", hr->hrm_index(), hr->get_short_type_str());
         // No need to scrub humongous, but we should scan it to rebuild remsets.

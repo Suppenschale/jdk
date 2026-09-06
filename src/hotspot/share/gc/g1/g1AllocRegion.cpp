@@ -120,10 +120,7 @@ size_t G1AllocRegion::retire(bool fill_up) {
   G1HeapRegion* alloc_region = _alloc_region;
   if (alloc_region != _dummy_region) {
     waste = retire_internal(alloc_region, fill_up);
-    if (UseNewCode && alloc_region->is_survivor()) {
-
-      //MutexLocker x(Heap_lock);
-
+    if (G1UseSurvivorHoles && alloc_region->is_survivor()) {
       actual_waste = pointer_delta(alloc_region->end(), alloc_region->pre_dummy_top());
       _g1h->add_potential_survivor_hole(alloc_region, alloc_region->pre_dummy_top(), actual_waste);
     }  
@@ -191,7 +188,7 @@ void G1AllocRegion::update_alloc_region(G1HeapRegion* alloc_region) {
 G1HeapRegion* G1AllocRegion::release() {
   trace("releasing");
   G1HeapRegion* alloc_region = _alloc_region;
-  retire(alloc_region->is_survivor() /* fill_up */);
+  retire(G1UseSurvivorHoles && alloc_region->is_survivor() /* fill_up */);
   assert_alloc_region(_alloc_region == _dummy_region, "post-condition of retire()");
   _alloc_region = nullptr;
   trace("released");

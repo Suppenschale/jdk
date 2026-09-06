@@ -281,7 +281,7 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
   // and the BOT will not be complete.
   hr->set_top(hr->end() - words_not_fillable);
 
-  if (UseNewCode) { 
+  if (G1UseHumongousHoles) {
     // Calculate start of humongous tail aligned with card table
     HeapWord* card_alignment = align_up(obj_top, CardTable::card_size_in_words());
 
@@ -465,7 +465,7 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(uint node_index,
     {
       MutexLocker x(Heap_lock);
 
-      if (UseNewCode2) {
+      if (G1UseSurvivorHoles) {
         result = find_young_hole(min_word_size, 
                                  word_size, 
                                  actual_word_size);
@@ -2862,13 +2862,16 @@ void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
                                             G1FreeRegionList* free_list) {
   assert(hr->is_humongous(), "this is only for humongous regions");
   bool has_tail = hr->has_humongous_tail();
-  size_t begin_size = pointer_delta(hr->old_objects_start(), hr->bottom());
   hr->clear_humongous();
-  if (has_tail) {
-    hr->fill_with_dummy_object(hr->bottom(), begin_size);
+  if (has_tail) { // Implies G1UseHumongousHole
+    size_t begin_size = pointer_delta(hr->old_objects_start(), hr->bottom());
     hr->move_to_old();
-    _old_set.add(hr);
     add_potential_old_hole(hr, hr->bottom(), begin_size);
+    {
+      MutexLocker x(G1OldSets_lock, Mutex::_no_safepoint_check_flag);
+      _old_set.add(hr); // needs G1OldSets_lock
+    }
+    hr->fill_with_dummy_object(hr->bottom(), begin_size); // Only updates BOT if old.
   } else {
     free_region(hr, free_list);
   }
@@ -2997,49 +3000,62 @@ void G1CollectedHeap::set_used(size_t bytes) {
 
 void G1CollectedHeap::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
   Ticks start = Ticks::now();
-  MutexLocker x(G1YoungDataStructure_lock);
+  MutexLocker x(G1YoungDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for inserting a hole. 
   bool success = _tracker.add_potential_survivor_hole(region, word, size_in_words);
-  double duration = (Ticks::now() - start).seconds() * 1000.0;
-  log_trace(gc_testing)("timing:add:young:%.3f:%d", duration, success);
+  size_t size_in_bytes = size_in_words * HeapWordSize;
+  double duration = (Ticks::now() - start).seconds() * 1000000.0;
+  log_trace(gc_testing)("timing:add:young:%ld:%.3f:%d", size_in_bytes, duration, success);
 }
 
 void G1CollectedHeap::add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
   Ticks start = Ticks::now();
-  MutexLocker x(G1OldDataStructure_lock);
+  MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for inserting a hole. 
   bool success = _tracker.add_potential_humongous_hole(region, word, size_in_words);
-  double duration = (Ticks::now() - start).seconds() * 1000.0;
-  log_trace(gc_testing)("timing:add:humongous:%.3f:%d", duration, success);
+  size_t size_in_bytes = size_in_words * HeapWordSize;
+  double duration = (Ticks::now() - start).seconds() * 1000000.0;
+  log_trace(gc_testing)("timing:add:humongous:%ld:%.3f:%d", size_in_bytes, duration, success);
 }
 
 void G1CollectedHeap::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
   Ticks start = Ticks::now();
-  MutexLocker x(G1OldDataStructure_lock);
+  MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for inserting a hole. 
   bool success = _tracker.add_potential_old_hole(region, word, size_in_words);
-  double duration = (Ticks::now() - start).seconds() * 1000.0;
-  log_trace(gc_testing)("timing:add:old:%.3f:%d", duration, success);
+  size_t size_in_bytes = size_in_words * HeapWordSize;
+  double duration = (Ticks::now() - start).seconds() * 1000000.0;
+  log_trace(gc_testing)("timing:add:old:%ld:%.3f:%d", size_in_bytes, duration, success);
 }
 
 HeapWord* G1CollectedHeap::find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size) {
+  guarantee(!SafepointSynchronize::is_at_safepoint(), "do not reuse survivor holes at safepoint");
   Ticks start = Ticks::now();
-  MutexLocker x(G1YoungDataStructure_lock);
+  MutexLocker x(G1YoungDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for receiving a hole. 
   HeapWord* result = _tracker.find_young_hole(min_word_size, desired_word_size, actual_word_size);
-  double duration = (Ticks::now() - start).seconds() * 1000.0;
-  log_trace(gc_testing)("timing:find:young:%.3f:%d", duration, result != nullptr);
+  size_t size_in_bytes = *actual_word_size * HeapWordSize;
+  double duration = (Ticks::now() - start).seconds() * 1000000.0;
+  log_trace(gc_testing)("timing:find:young:%ld:%.3f:%d", size_in_bytes, duration, result != nullptr);
   return result;
 }
 
 HeapWord* G1CollectedHeap::find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size) {
+  guarantee(SafepointSynchronize::is_at_safepoint(), "do not reuse old holes outside safepoint");
+
   Ticks start = Ticks::now();
-  MutexLocker x(G1OldDataStructure_lock);
+  G1CollectedHeap* g1h = G1CollectedHeap::heap();
+  if (g1h->collector_state()->mark_in_progress()) {
+    // During concurrent start and marking do not support old gen holes (for now).
+    return nullptr;
+  }
+  MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for receiving a hole. 
   HeapWord* result = _tracker.find_old_hole(min_word_size, desired_word_size, actual_word_size);
-  if (result != nullptr) _bytes_used_during_gc += *actual_word_size * HeapWordSize;
-  double duration = (Ticks::now() - start).seconds() * 1000.0;
-  log_trace(gc_testing)("timing:find:old:%.3f:%d", duration, result != nullptr);
+  size_t size_in_bytes = *actual_word_size * HeapWordSize;
+  if (result != nullptr) _bytes_used_during_gc += size_in_bytes;
+  double duration = (Ticks::now() - start).seconds() * 1000000.0;
+  log_trace(gc_testing)("timing:find:old:%ld:%.3f:%d", size_in_bytes, duration, result != nullptr);
   return result;
 }
 
@@ -3226,7 +3242,9 @@ void G1CollectedHeap::retire_gc_alloc_region(G1HeapRegion* alloc_region,
 
   bool const during_im = collector_state()->in_concurrent_start_gc();
   if (during_im && allocated_bytes > 0) {
-    _cm->add_root_region(alloc_region);
+    _cm->add_root_region_range(
+        MemRegion(_cm->top_at_mark_start(alloc_region),
+                  alloc_region->pre_dummy_top()));
   }
   G1HeapRegionPrinter::retire(alloc_region);
 }
