@@ -414,20 +414,34 @@ public:
     _humongous_objects_reclaimed++;
 
     auto free_humongous_region = [&] (G1HeapRegion* r) {
-      _freed_bytes += r->used();
+      if (!r->has_humongous_tail()) { // We do not really free that region later in free_humongous_region()
+        _freed_bytes += r->used();
+      }
       r->set_containing_set(nullptr);
       _humongous_regions_reclaimed++;
-      G1HeapRegionPrinter::eager_reclaim(r);
       // Humongous non-typeArrays may have dirty card tables. Need to be cleared. Do it
       // for all types just in case.
 
       // Should not clear card tables for the tail allocations. 
       if (r->has_humongous_tail()) {
         r->clear_both_card_tables(r->bottom(), r->old_objects_start());
+        G1HeapRegionPrinter::eager_reclaim_tail(r);
+        // Drop remembered set state. Remembered sets for humongous regions were for that humongous regions, do not bother
+        // using it for evacuation right away.
+        assert(!r->rem_set()->has_cset_group(), "must be"); // Cleared by clearing the humongous starts region one.
+        r->rem_set()->clear(true /* only card set */, false /* keep_tracked */);
+        if (_g1h->collector_state()->mark_or_rebuild_in_progress()) {
+          // If we are during the concurrent cycle, remove the holes: if in marking, following scrubbing will attempt
+          // to recreate them, and during scrubbing we will otherwise do wrong things if there are already holes in it.
+          _g1h->free_humongous_region(r, nullptr, true /* add_hole_in_tail */);
+        } else {
+          _g1h->free_humongous_region(r, nullptr, true /* add_hole_in_tail */);
+        }
       } else {
         r->clear_both_card_tables();
+        G1HeapRegionPrinter::eager_reclaim(r);
+        _g1h->free_humongous_region(r, nullptr);
       }
-      _g1h->free_humongous_region(r, nullptr);
     };
 
     _g1h->humongous_obj_regions_iterate(r, free_humongous_region);

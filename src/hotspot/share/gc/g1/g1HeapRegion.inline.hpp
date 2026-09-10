@@ -83,7 +83,7 @@ inline bool G1HeapRegion::is_marked_in_bitmap(oop obj) const {
 
 inline bool G1HeapRegion::block_is_obj(const HeapWord* const p, HeapWord* const pb) const {
   assert(p >= bottom() && p < top(), "precondition");
-  assert(!is_continues_humongous(), "p must point to block-start");
+  assert(!is_continues_humongous() || has_humongous_tail(), "p must point to block-start");
 
   if (is_in_parsable_area(p, pb)) {
     return true;

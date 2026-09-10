@@ -382,9 +382,9 @@ void G1CMRootMemRegions::reset() {
 
 void G1CMRootMemRegions::add(HeapWord* start, HeapWord* end) {
   assert_at_safepoint();
-  assert(G1FreeList_lock->is_locked(), "must be");
+  assert(G1FreeList_lock->owned_by_self() || Thread::current()->is_VM_thread(), "must be");
 
-  assert(start != nullptr && end != nullptr && start <= end, "Start (" PTR_FORMAT ") should be less or equal to "
+  assert(G1CollectedHeap::heap()->heap_region_containing(start)->has_humongous_tail() || (start != nullptr && end != nullptr && start <= end), "Start (" PTR_FORMAT ") should be less or equal to "
          "end (" PTR_FORMAT ")", p2i(start), p2i(end));
 
   _root_regions.append(MemRegion(start, end));
@@ -582,11 +582,18 @@ void G1ConcurrentMark::reset() {
 
 void G1ConcurrentMark::clear_statistics(G1HeapRegion* r) {
   uint region_idx = r->hrm_index();
-  for (uint j = 0; j < _max_num_tasks; ++j) {
-    _tasks[j]->clear_mark_stats_cache(region_idx);
+  if (r->has_humongous_tail()) {
+    for (uint j = 0; j < _max_num_tasks; ++j) {
+      _tasks[j]->flush_mark_stats_cache();
+    }
+    // No need to clear TARS and region mark stats for tail region.
+  } else {
+    for (uint j = 0; j < _max_num_tasks; ++j) {
+      _tasks[j]->clear_mark_stats_cache(region_idx);
+    }
+    _top_at_rebuild_starts[region_idx] = nullptr;
+    _region_mark_stats[region_idx].clear();
   }
-  _top_at_rebuild_starts[region_idx] = nullptr;
-  _region_mark_stats[region_idx].clear();
 }
 
 void G1ConcurrentMark::humongous_object_eagerly_reclaimed(G1HeapRegion* r) {
@@ -594,6 +601,8 @@ void G1ConcurrentMark::humongous_object_eagerly_reclaimed(G1HeapRegion* r) {
   assert(r->is_starts_humongous(), "Got humongous continues region here");
 
   // Need to clear mark bit of the humongous object. Doing this unconditionally is fine.
+  // It's also fine for humongous continues regions that have tail allocations: the first
+  // mark in the tail is always from the humongous region.
   mark_bitmap()->clear(r->bottom());
 
   if (!_g1h->collector_state()->mark_or_rebuild_in_progress()) {
@@ -1032,9 +1041,10 @@ void G1ConcurrentMark::scan_root_region(const MemRegion* region, uint worker_id)
 #ifdef ASSERT
   HeapWord* last = region->last();
   G1HeapRegion* hr = _g1h->heap_region_containing(last);
-  assert(hr->is_old() || top_at_mark_start(hr) == hr->bottom(),
+  assert(hr->is_old() || top_at_mark_start(hr) == hr->bottom() ||
+         (hr->has_humongous_tail() /* fixme: make more concrete */),
          "Root regions must be old or survivor/eden but region %u is %s", hr->hrm_index(), hr->get_type_str());
-  assert(top_at_mark_start(hr) == region->start(),
+  assert(hr->has_humongous_tail() || top_at_mark_start(hr) == region->start(),
          "MemRegion start should be equal to TAMS");
 #endif
 
@@ -1106,7 +1116,8 @@ void G1ConcurrentMark::add_root_region_range(MemRegion mr) {
 bool G1ConcurrentMark::is_root_region(G1HeapRegion* r) {
   // Survivor regions are added with pre-dummy-top.
   HeapWord* top = r->is_young() ? r->pre_dummy_top() : r->top();
-  return root_regions()->contains(MemRegion(top_at_mark_start(r), top));
+  // Humongous tail region can have multiple holes. Since this is debugging/verification only, skip this.
+  return r->has_humongous_tail() || root_regions()->contains(MemRegion(top_at_mark_start(r), top));
 }
 
 void G1ConcurrentMark::root_region_scan_abort_and_wait() {
@@ -1268,6 +1279,7 @@ void G1ConcurrentMark::remark() {
       log_debug(gc,ergo)("Running %s using %u workers for %u regions in heap", cl.name(), num_workers, _g1h->num_committed_regions());
       _g1h->workers()->run_task(&cl, num_workers);
 
+      cl.finish_tail_regions();
       log_debug(gc, remset, tracking)("Remembered Set Tracking update regions total %u, selected %u",
                                         _g1h->num_committed_regions(), cl.total_selected_for_rebuild());
 
@@ -2358,8 +2370,8 @@ void G1CMTask::process_current_region(G1CMBitMapClosure& bitmap_closure) {
   // fresh region, _finger points to start().
   MemRegion mr = MemRegion(_finger, _region_limit);
 
-  assert(!_curr_region->is_humongous() || mr.start() == _curr_region->bottom(),
-         "humongous regions should go around loop once only");
+  assert(!_curr_region->is_humongous() || _curr_region->has_humongous_tail() || mr.start() == _curr_region->bottom(),
+         "humongous regions should go around loop once only if they do not have a tail");
 
   // Some special cases:
   // If the memory region is empty, we can just give up the region.
@@ -2372,7 +2384,7 @@ void G1CMTask::process_current_region(G1CMBitMapClosure& bitmap_closure) {
   if (mr.is_empty()) {
     giveup_current_region();
     abort_marking_if_regular_check_fail();
-  } else if (_curr_region->is_humongous() && mr.start() == _curr_region->bottom()) {
+  } else if (_curr_region->is_humongous() && !_curr_region->has_humongous_tail() && mr.start() == _curr_region->bottom()) {
     if (_mark_bitmap->is_marked(mr.start())) {
       // The object is marked - apply the closure
       bitmap_closure.do_addr(mr.start());

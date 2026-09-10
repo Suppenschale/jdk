@@ -96,7 +96,7 @@ bool G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region
     return add_potential_old_hole(region, word, size_in_words);
 }
 
-bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
+bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {       
     if (region->has_pinned_objects()) { // Reject pinned regions: they may contain valid objects anywhere (actually it would be possible, but then would need to reject at allocation side. This is more complicated.)
         return false;
     }
@@ -809,8 +809,8 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     size_t want_to_allocate = word_size;
     size_t remaining = available - want_to_allocate;    
 
-    // Fill hole with dummy object
-    region->fill_with_dummy_object(hole, want_to_allocate);
+    // Fill hole with dummy object; since we might be operating on a humongous tail region, we need to force BOT update.
+    region->fill_with_dummy_object(hole, want_to_allocate, false /* zap */, true /* force */);
 
     // If the hole is a gap between top and end, then move the top
     if (region->top() == hole) {

@@ -717,7 +717,8 @@ public:
   // The method assumes that only a single thread is ever calling
   // this for a particular region at once.
   void free_humongous_region(G1HeapRegion* hr,
-                             G1FreeRegionList* free_list);
+                             G1FreeRegionList* free_list,
+                             bool add_hole_in_tail = false);
 
   // Execute func(G1HeapRegion* r, bool is_last) on every region covered by the
   // given range.
@@ -1071,6 +1072,7 @@ public:
  public:
 
   // hole tracker methods  
+  void remove_old_holes(G1HeapRegion* region);
   void add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
   void add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
   void add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words); 

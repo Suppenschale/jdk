@@ -44,6 +44,8 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
   uint _num_humongous_regions_removed;
   G1FreeRegionList* _local_cleanup_list;
 
+  GrowableArrayCHeap<G1HeapRegion*, mtGC> _local_humongous_tail_convert_list;
+
   G1OnRegionClosure(G1CollectedHeap* g1h,
                     G1ConcurrentMark* cm,
                     G1FreeRegionList* local_cleanup_list) :
@@ -59,12 +61,14 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
     assert(!hr->has_pinned_objects(), "precondition");
     assert(hr->used() > 0, "precondition");
 
+    assert(!hr->has_humongous_tail(), "must be handled elsewhere");
+
     _freed_bytes += hr->used();
-    hr->set_containing_set(nullptr);
     hr->clear_both_card_tables();
-    _cm->clear_statistics(hr);
-    G1HeapRegionPrinter::mark_reclaim(hr);
     _g1h->concurrent_refine()->notify_region_reclaimed(hr);
+    G1HeapRegionPrinter::mark_reclaim(hr);
+    hr->set_containing_set(nullptr);
+    _cm->clear_statistics(hr);
   }
 
   void reclaim_empty_humongous_region(G1HeapRegion* hr) {
@@ -74,8 +78,12 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
       assert(hr->is_humongous(), "precondition");
 
       _num_humongous_regions_removed++;
-      reclaim_empty_region_common(hr);
-      _g1h->free_humongous_region(hr, _local_cleanup_list);
+      if (!hr->has_humongous_tail()) {
+        reclaim_empty_region_common(hr);
+        _g1h->free_humongous_region(hr, _local_cleanup_list);
+      } else {
+        _local_humongous_tail_convert_list.append(hr);
+      }
     };
 
     _g1h->humongous_obj_regions_iterate(hr, on_humongous_region);
@@ -100,7 +108,16 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
       if (is_live) {
         const bool selected_for_rebuild = tracker->update_humongous_before_rebuild(hr);
         auto on_humongous_region = [&] (G1HeapRegion* hr) {
-          if (selected_for_rebuild || (hr->is_continues_humongous() && hr->has_humongous_tail())) { // FIXME: Check if we actually ever want to reclaim space in humongous tail regions; wrong!
+          bool force_rebuild = (hr->is_continues_humongous() && hr->has_humongous_tail());
+          if (force_rebuild) {
+            uint hrm_idx = hr->hrm_index();
+            size_t obj_size = cast_to_oop<HeapWord*>(hr->humongous_start_region()->bottom())->size() * HeapWordSize;
+            size_t tail_size = (obj_size % G1HeapRegion::GrainBytes);
+            hr->note_end_of_marking(_cm->top_at_mark_start(hrm_idx),
+                                    _cm->live_bytes(hrm_idx) + tail_size,
+                                    _cm->incoming_refs(hrm_idx));
+          }
+          if (selected_for_rebuild || force_rebuild) { // FIXME: Check if we actually ever want to reclaim space in humongous tail regions; wrong!
             _num_selected_for_rebuild++;
           }
           _cm->update_top_at_rebuild_start(hr);
@@ -149,6 +166,32 @@ G1UpdateRegionLivenessAndSelectForRebuildTask::~G1UpdateRegionLivenessAndSelectF
   }
 }
 
+void G1UpdateRegionLivenessAndSelectForRebuildTask::finish_tail_regions() {
+  for (G1HeapRegion* hr : _humongous_tail_convert_list) {
+    hr->set_containing_set(nullptr);
+    _cm->clear_statistics(hr);
+
+    hr->clear_both_card_tables(hr->bottom(), hr->old_objects_start());
+    G1HeapRegionPrinter::mark_reclaim_tail(hr);
+
+    uint region_idx = hr->hrm_index();
+    hr->note_end_of_marking(_cm->top_at_mark_start(hr), _cm->live_bytes(region_idx), _cm->incoming_refs(region_idx));
+    _cm->update_top_at_rebuild_start(hr);
+
+    // We'll let scrubbing rebuild them, so remove and do not add the hole.
+    _g1h->free_humongous_region(hr, nullptr /* free_list */, true /* add_hole_in_tail */);
+
+    // Drop remembered set state. Remembered sets for humongous regions were for that humongous regions, do not bother
+    // using it right away.
+    assert(!hr->rem_set()->has_cset_group(), "must be"); // Cleared by clearing the humongous starts region one.
+    hr->rem_set()->clear(true /* only card set */, false /* keep_tracked */);
+    const bool selected_for_rebuild = _g1h->policy()->remset_tracker()->update_old_before_rebuild(hr);
+    if (selected_for_rebuild) {
+      _total_selected_for_rebuild++;
+    }
+  }
+}
+
 void G1UpdateRegionLivenessAndSelectForRebuildTask::work(uint worker_id) {
   G1FreeRegionList local_cleanup_list("Local Cleanup List");
   G1OnRegionClosure on_region_cl(_g1h, _cm, &local_cleanup_list);
@@ -164,6 +207,7 @@ void G1UpdateRegionLivenessAndSelectForRebuildTask::work(uint worker_id) {
     MutexLocker x(G1RareEvent_lock, Mutex::_no_safepoint_check_flag);
     _g1h->decrement_summary_bytes(on_region_cl._freed_bytes);
 
+    _humongous_tail_convert_list.appendAll(&on_region_cl._local_humongous_tail_convert_list);
     _cleanup_list.add_ordered(&local_cleanup_list);
     assert(local_cleanup_list.is_empty(), "post-condition");
   }

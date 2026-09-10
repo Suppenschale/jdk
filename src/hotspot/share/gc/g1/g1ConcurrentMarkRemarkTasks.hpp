@@ -46,6 +46,8 @@ class G1UpdateRegionLivenessAndSelectForRebuildTask : public WorkerTask {
   // Reclaimed empty regions
   G1FreeRegionList _cleanup_list;
 
+  GrowableArrayCHeap<G1HeapRegion*, mtGC> _humongous_tail_convert_list;
+
   struct G1OnRegionClosure;
 
 public:
@@ -55,6 +57,7 @@ public:
 
   ~G1UpdateRegionLivenessAndSelectForRebuildTask();
 
+  void finish_tail_regions();
   void work(uint worker_id) override;
 
   uint total_selected_for_rebuild() const { return _total_selected_for_rebuild; }

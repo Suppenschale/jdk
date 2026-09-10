@@ -73,7 +73,7 @@ inline bool G1ConcurrentMark::mark_in_bitmap(uint const worker_id, oop const obj
   // Some callers may have stale objects to mark above TAMS after humongous reclaim.
   // Can't assert that this is a valid object at this point, since it might be in the process of being copied by another thread.
   DEBUG_ONLY(G1HeapRegion* const hr = _g1h->heap_region_containing(obj);)
-  assert(!hr->is_continues_humongous(),
+  assert(!hr->is_continues_humongous() || hr->has_humongous_tail(),
          "Should not try to mark object " PTR_FORMAT " in Humongous continues region %u above TAMS " PTR_FORMAT,
          p2i(obj), hr->hrm_index(), p2i(top_at_mark_start(hr)));
 

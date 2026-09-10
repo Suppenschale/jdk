@@ -59,7 +59,11 @@ public:
 
   static void mark_reclaim(G1HeapRegion* hr)              { print("MARK-RECLAIM", hr); }
 
+  static void mark_reclaim_tail(G1HeapRegion* hr)         { print("MARK-RECLAIM-TAIL", hr); }
+
   static void eager_reclaim(G1HeapRegion* hr)             { print("EAGER-RECLAIM", hr); }
+
+  static void eager_reclaim_tail(G1HeapRegion* hr)        { print("EAGER-RECLAIM-TAIL", hr); }
 
   static void evac_reclaim(G1HeapRegion* hr)              { print("EVAC-RECLAIM", hr); }
 

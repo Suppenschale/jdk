@@ -142,7 +142,7 @@ public:
 
   // At the given address create an object with the given size. If the region
   // is old the BOT will be updated if the object spans a threshold.
-  void fill_with_dummy_object(HeapWord* address, size_t word_size, bool zap = true);
+  void fill_with_dummy_object(HeapWord* address, size_t word_size, bool zap = true, bool force = false);
 
   // Create objects in the given range. The BOT will be updated if needed and
   // the created objects will have their header marked to show that they are

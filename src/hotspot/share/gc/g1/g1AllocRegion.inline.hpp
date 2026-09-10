@@ -86,7 +86,6 @@ inline HeapWord* G1AllocRegion::attempt_allocation_using_new_region(size_t min_w
   G1HeapRegion* alloc_region = _alloc_region;
   intptr_t top_before = p2i(alloc_region->top());
   size_t waste = retire(true /* fill_up */);
-  //log_trace(gc_testing)("after  top: %d", p2i(alloc_region->top()) == top_before);
   HeapWord* result = new_alloc_region_and_allocate(desired_word_size);
   if (result != nullptr) {
     *actual_word_size = desired_word_size;

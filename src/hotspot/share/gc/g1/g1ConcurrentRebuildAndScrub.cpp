@@ -163,7 +163,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
     // Scan or scrub depending on if addr is marked.
     HeapWord* scan_or_scrub(G1HeapRegion* hr, HeapWord* addr, HeapWord* limit) {
-      if (_bitmap->is_marked(addr) || _cm->check_left_allocated_objects(addr)) {
+      if (_bitmap->is_marked(addr) || _cm->check_left_allocated_objects(addr)) { // FIXME: check if second condition needed? We should remove all holes, don't we?
         //  Live object, need to scan to rebuild remembered sets for this object.
         return addr + scan_object(hr, addr);
       } else {
@@ -219,7 +219,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
     // Scan a humongous region for remembered set updates. Scans in chunks to avoid
     // stalling safepoints.
-    void scan_humongous_region(G1HeapRegion* hr, HeapWord* const pb) {
+    void scan_and_scrub_humongous_region(G1HeapRegion* hr, HeapWord* const pb) {
       assert(should_rebuild_or_scrub(hr), "must be");
 
       if (!_should_rebuild_remset) {
@@ -238,7 +238,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
       log_trace(gc, marking)("Rebuild for humongous region: " HR_FORMAT " pb: " PTR_FORMAT " TARS: " PTR_FORMAT,
                               HR_FORMAT_PARAMS(hr), p2i(pb), p2i(_cm->top_at_rebuild_start(hr)));
 
-      // Scan the humongous object in chunks from bottom to top to rebuild remembered sets.
+      // Scan the humongous object in chunks from bottom to top (or end of humongous object) to rebuild remembered sets.
       HeapWord* humongous_end = hr->humongous_start_region()->bottom() + humongous->size();
       MemRegion mr(hr->bottom(), MIN2(hr->top(), humongous_end));
 
@@ -282,8 +282,8 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         scan_and_scrub_region(hr, hr->bottom(), pb);
       } else {
         assert(hr->is_humongous(), "must be, but %u is %s", hr->hrm_index(), hr->get_short_type_str());
-        // No need to scrub humongous, but we should scan it to rebuild remsets.
-        scan_humongous_region(hr, pb);
+        // Needs scanning (or in case of tail regions, scrubbing).
+        scan_and_scrub_humongous_region(hr, pb);
       }
 
       return _cm->has_aborted();

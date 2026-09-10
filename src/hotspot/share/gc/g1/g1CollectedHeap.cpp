@@ -281,7 +281,7 @@ void G1CollectedHeap::set_humongous_metadata(G1HeapRegion* first_hr,
   // and the BOT will not be complete.
   hr->set_top(hr->end() - words_not_fillable);
 
-  if (G1UseHumongousHoles) {
+  if (G1UseHumongousHoles && first != last) { // Only allow tail allocation in continues humongous. Maybe lift?
     // Calculate start of humongous tail aligned with card table
     HeapWord* card_alignment = align_up(obj_top, CardTable::card_size_in_words());
 
@@ -2113,7 +2113,8 @@ class IterateObjectClosureRegionClosure: public G1HeapRegionClosure {
 public:
   IterateObjectClosureRegionClosure(ObjectClosure* cl) : _cl(cl) {}
   bool do_heap_region(G1HeapRegion* r) {
-    if (!r->is_continues_humongous()) {
+    if (!r->is_continues_humongous() || r->has_humongous_tail()) {
+      // FIXME: may iterate humongous itself twice; only iterate the tail in tail regions
       r->object_iterate(_cl);
     }
     return false;
@@ -2859,19 +2860,27 @@ void G1CollectedHeap::retain_region(G1HeapRegion* hr) {
 }
 
 void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
-                                            G1FreeRegionList* free_list) {
+                                            G1FreeRegionList* free_list,
+                                            bool add_hole_in_tail) {
   assert(hr->is_humongous(), "this is only for humongous regions");
   bool has_tail = hr->has_humongous_tail();
+  HeapWord* old_objects_start_save = hr->old_objects_start();
   hr->clear_humongous();
   if (has_tail) { // Implies G1UseHumongousHole
-    size_t begin_size = pointer_delta(hr->old_objects_start(), hr->bottom());
-    hr->move_to_old();
-    add_potential_old_hole(hr, hr->bottom(), begin_size);
+    assert(old_objects_start_save != nullptr, "must be");
+    size_t begin_size = pointer_delta(old_objects_start_save, hr->bottom());
+    hr->set_old(); // Just force old.
     {
       MutexLocker x(G1OldSets_lock, Mutex::_no_safepoint_check_flag);
       _old_set.add(hr); // needs G1OldSets_lock
     }
     hr->fill_with_dummy_object(hr->bottom(), begin_size); // Only updates BOT if old.
+    if (add_hole_in_tail) {
+      add_potential_old_hole(hr, hr->bottom(), begin_size);
+      if (concurrent_mark()->cm_thread()->in_progress()) {
+        concurrent_mark()->add_to_allocation_tree(MemRegion(hr->bottom(), begin_size));
+      }
+    }
   } else {
     free_region(hr, free_list);
   }
@@ -2997,6 +3006,10 @@ void G1CollectedHeap::set_used(size_t bytes) {
   _summary_bytes_used = bytes;
 }
 
+void G1CollectedHeap::remove_old_holes(G1HeapRegion* region) {
+  assert_at_safepoint_on_vm_thread();
+  _tracker.remove_region(region);
+}
 
 void G1CollectedHeap::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
   Ticks start = Ticks::now();
@@ -3045,10 +3058,12 @@ HeapWord* G1CollectedHeap::find_old_hole(size_t min_word_size, size_t desired_wo
 
   Ticks start = Ticks::now();
   G1CollectedHeap* g1h = G1CollectedHeap::heap();
-  if (g1h->collector_state()->mark_in_progress()) {
+  /*
+  if (g1h->collector_state()->mark_in_progress()) { // maybe in whole concurrent cycle?
     // During concurrent start and marking do not support old gen holes (for now).
     return nullptr;
   }
+  */
   MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for receiving a hole. 
   HeapWord* result = _tracker.find_old_hole(min_word_size, desired_word_size, actual_word_size);
@@ -3233,18 +3248,20 @@ void G1CollectedHeap::retire_gc_alloc_region(G1HeapRegion* alloc_region,
                                              size_t allocated_bytes,
                                              G1HeapRegionAttr dest) {
   _bytes_used_during_gc += allocated_bytes;
+
+  bool needs_to_add_to_root_regions = collector_state()->in_concurrent_start_gc() && allocated_bytes > 0;
+
   if (dest.is_old()) {
     old_set_add(alloc_region);
+    if (needs_to_add_to_root_regions) {
+      _cm->add_root_region(alloc_region);
+    }
   } else {
     assert(dest.is_young(), "Retiring alloc region should be young (%d)", dest.type());
     _survivor.add_used_bytes(allocated_bytes);
-  }
-
-  bool const during_im = collector_state()->in_concurrent_start_gc();
-  if (during_im && allocated_bytes > 0) {
-    _cm->add_root_region_range(
-        MemRegion(_cm->top_at_mark_start(alloc_region),
-                  alloc_region->pre_dummy_top()));
+    if (needs_to_add_to_root_regions) {
+      _cm->add_root_region_range(MemRegion(_cm->top_at_mark_start(alloc_region), alloc_region->pre_dummy_top()));
+    }
   }
   G1HeapRegionPrinter::retire(alloc_region);
 }
@@ -3269,7 +3286,7 @@ public:
     if (!CompressedOops::is_null(heap_oop)) {
       oop obj = CompressedOops::decode_not_null(heap_oop);
       G1HeapRegion* hr = _g1h->heap_region_containing(obj);
-      assert(!hr->is_continues_humongous(),
+      assert(!hr->is_continues_humongous() || hr->has_humongous_tail(),
              "trying to add code root " PTR_FORMAT " in continuation of humongous region " HR_FORMAT
              " starting at " HR_FORMAT,
              p2i(_nm), HR_FORMAT_PARAMS(hr), HR_FORMAT_PARAMS(hr->humongous_start_region()));
