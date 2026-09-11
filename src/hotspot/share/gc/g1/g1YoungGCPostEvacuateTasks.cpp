@@ -433,7 +433,8 @@ public:
         if (_g1h->collector_state()->mark_or_rebuild_in_progress()) {
           // If we are during the concurrent cycle, remove the holes: if in marking, following scrubbing will attempt
           // to recreate them, and during scrubbing we will otherwise do wrong things if there are already holes in it.
-          _g1h->free_humongous_region(r, nullptr, true /* add_hole_in_tail */);
+          _g1h->remove_old_holes(r);
+          _g1h->free_humongous_region(r, nullptr, false /* add_hole_in_tail */);
         } else {
           _g1h->free_humongous_region(r, nullptr, true /* add_hole_in_tail */);
         }

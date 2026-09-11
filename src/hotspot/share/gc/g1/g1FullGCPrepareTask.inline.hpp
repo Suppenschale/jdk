@@ -46,11 +46,11 @@ void G1DetermineCompactionQueueClosure::free_empty_humongous_region(G1HeapRegion
 
 inline bool G1DetermineCompactionQueueClosure::should_compact(G1HeapRegion* hr) const {
   // There is no need to iterate and forward objects in non-movable regions ie.
-  // prepare them for compaction.
-  if (hr->is_humongous() || hr->has_pinned_objects()) {
+  // prepare them for compaction. FIXME
+  if ((hr->is_humongous() && !hr->has_humongous_tail()) || hr->has_pinned_objects()) {
     return false;
   }
-  size_t live_words = _collector->live_words(hr->hrm_index());
+  size_t live_words = _collector->live_words(hr->hrm_index()); // FIXME: probably does not contain correct live words for humongous tail.
   size_t live_words_threshold = _collector->scope()->region_compaction_threshold();
   // High live ratio region will not be compacted.
   return live_words <= live_words_threshold;
@@ -67,7 +67,7 @@ inline G1FullGCCompactionPoint* G1DetermineCompactionQueueClosure::next_compacti
 }
 
 inline void G1DetermineCompactionQueueClosure::add_to_compaction_queue(G1HeapRegion* hr) {
-  _collector->set_compaction_top(hr, hr->bottom());
+  _collector->set_compaction_top(hr, hr->has_humongous_tail() ? hr->old_objects_start() : hr->bottom());
   _collector->set_has_compaction_targets();
 
   G1FullGCCompactionPoint* cp = next_compaction_point();
@@ -80,12 +80,36 @@ inline void G1DetermineCompactionQueueClosure::add_to_compaction_queue(G1HeapReg
 
 static bool has_pinned_objects(G1HeapRegion* hr) {
   return hr->has_pinned_objects() ||
-      (hr->is_humongous() && hr->humongous_start_region()->has_pinned_objects());
+      // Humongous tail objects and the object itself have seperate pinning requirements - i.e.
+      // the humongous starts region's pin indicates that the humongous object itself is pinned.
+      // If there is pinning on the tail region, this means any of the tail objects is pinned,
+      // not the humongous objects (the pinning is on the region with the object header, i.e.
+      // the humongous start region for the humongous object).
+      (hr->is_humongous() && hr->humongous_start_region()->has_pinned_objects() && !hr->has_humongous_tail());
+}
+
+static void make_humongous_tail_old(G1HeapRegion* r) {
+  HeapWord* save_objects_start = r->old_objects_start();
+  r->clear_humongous();
+  r->set_old();
+  r->fill_with_dummy_object(r->bottom(), pointer_delta(save_objects_start, r->bottom()));
+  // FIXME: probably more changes needed.
+}
+
+static bool is_humongous_live(G1HeapRegion* r, G1CMBitMap* bitmap) {
+  precond(r->is_humongous());
+  oop obj = cast_to_oop(r->humongous_start_region()->bottom());
+  // There may be no reference on the humongous start region, but still pinned, making it implicitly live.
+  return bitmap->is_marked(obj) || r->humongous_start_region()->has_pinned_objects();
 }
 
 inline bool G1DetermineCompactionQueueClosure::do_heap_region(G1HeapRegion* hr) {
+  if (hr->has_humongous_tail() && !is_humongous_live(hr, _collector->mark_bitmap())) {
+    make_humongous_tail_old(hr);
+  }
+
   if (should_compact(hr)) {
-    assert(!hr->is_humongous(), "moving humongous objects not supported.");
+    assert(!hr->is_humongous() || hr->has_humongous_tail(), "moving humongous objects not supported.");
     add_to_compaction_queue(hr);
     return false;
   }
@@ -97,12 +121,16 @@ inline bool G1DetermineCompactionQueueClosure::do_heap_region(G1HeapRegion* hr) 
     assert(_collector->is_skip_compacting(hr->hrm_index()), "pinned region %u must be skip_compacting", hr->hrm_index());
     log_trace(gc, phases)("Phase 2: skip compaction region index: %u (%s), has pinned objects",
                           hr->hrm_index(), hr->get_short_type_str());
-  } else if (hr->is_humongous() && !hr->has_humongous_tail()) { // fixme: probably wrong
-    oop obj = cast_to_oop(hr->humongous_start_region()->bottom());
-    bool is_empty = !_collector->mark_bitmap()->is_marked(obj);
-    if (is_empty) {
+  } else if (hr->is_humongous()) {
+    bool is_empty_object = !is_humongous_live(hr, _collector->mark_bitmap());
+    if (is_empty_object) {
+      precond(!hr->has_humongous_tail());
       free_empty_humongous_region(hr);
     } else {
+      if (hr->has_humongous_tail()) {
+        // We only came here with a humongous tail region that is not empty, and liveness is high.
+        _collector->update_from_compacting_to_skip_compacting(hr->hrm_index());
+      }
       _collector->set_has_humongous();
     }
   } else {

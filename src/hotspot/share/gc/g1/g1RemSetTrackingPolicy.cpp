@@ -32,8 +32,7 @@
 void G1RemSetTrackingPolicy::update_at_allocate(G1HeapRegion* r) {
   assert(r->is_young() || r->is_humongous() || r->is_old(),
         "Region %u with unexpected heap region type %s", r->hrm_index(), r->get_type_str());
-  if (r->is_old()) {
-    // By default, do not create remembered set for new old regions.
+  if (r->is_old() || r->is_continues_humongous()) {
     r->rem_set()->set_state_untracked();
     return;
   }
@@ -57,10 +56,7 @@ bool G1RemSetTrackingPolicy::update_humongous_before_rebuild(G1HeapRegion* r) {
   // remset state can be reset after Full-GC. Try to re-enable remset-tracking for
   // them if possible.
   if (!r->rem_set()->is_tracked()) {
-    auto on_humongous_region = [] (G1HeapRegion* r) {
-      r->rem_set()->set_state_updating();
-    };
-    G1CollectedHeap::heap()->humongous_obj_regions_iterate(r, on_humongous_region);
+    r->rem_set()->set_state_updating();
     selected_for_rebuild = true;
   }
 
@@ -99,7 +95,7 @@ void G1RemSetTrackingPolicy::update_after_rebuild(G1HeapRegion* r) {
       // Handle HC regions with the HS region.
       g1h->humongous_obj_regions_iterate(r,
                                          [&] (G1HeapRegion* r) {
-                                           assert(!r->is_continues_humongous() || r->rem_set()->is_empty(),
+                                           assert(!r->is_continues_humongous() || r->rem_set()->cardset_is_empty(),
                                                   "Continues humongous region %u remset should be empty", r->hrm_index());
                                            r->rem_set()->clear(true /* only_cardset */);
                                          });

@@ -376,7 +376,7 @@ public:
   // Same question as above, during full gc. Full gc needs to scrub any region that
   // might be skipped for compaction. This includes young generation regions as the
   // region relabeling to old happens later than scrubbing.
-  bool needs_scrubbing_during_full_gc() const { return is_young() || needs_scrubbing(); }
+  bool needs_scrubbing_during_full_gc() const { return is_young() || needs_scrubbing() || has_humongous_tail(); }
 
   const char* get_type_str() const { return _type.get_str(); }
   const char* get_short_type_str() const { return _type.get_short_str(); }

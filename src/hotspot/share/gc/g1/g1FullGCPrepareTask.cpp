@@ -46,7 +46,7 @@ bool G1FullGCPrepareTask::G1CalculatePointersClosure::do_heap_region(G1HeapRegio
   uint region_idx = hr->hrm_index();
   assert(_collector->is_compaction_target(region_idx), "must be");
 
-  assert(!hr->is_humongous(), "must be");
+  assert(!hr->is_humongous() || hr->has_humongous_tail(), "must be");
 
   prepare_for_compaction(hr);
 

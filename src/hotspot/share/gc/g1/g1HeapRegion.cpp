@@ -442,10 +442,10 @@ bool G1HeapRegion::verify_code_roots(VerifyOption vo) const {
     return has_code_roots;
   }
 
-  if (is_continues_humongous()) {
+  if (is_continues_humongous() && !has_humongous_tail()) {
     bool has_code_roots = code_roots_length > 0;
     if (has_code_roots) {
-      log_error(gc, verify)("region " HR_FORMAT " is a continuation of a humongous region but has %zu code root entries",
+      log_error(gc, verify)("region " HR_FORMAT " is a continuation of a humongous region without tail objects but has %zu code root entries",
                             HR_FORMAT_PARAMS(this), code_roots_length);
     }
     return has_code_roots;
@@ -732,7 +732,8 @@ bool G1HeapRegion::verify_liveness_and_remset(VerifyOption vo) const {
   G1VerifyFailureCounter failures;
 
   HeapWord* p;
-  for (p = bottom(); p < top(); p += block_size(p)) {
+  HeapWord* bot = has_humongous_tail() ? old_objects_start() : bottom();
+  for (p = bot; p < top(); p += block_size(p)) {
     oop obj = cast_to_oop(p);
 
     if (g1h->is_obj_dead_cond(obj, this, vo)) {
@@ -751,7 +752,7 @@ bool G1HeapRegion::verify_liveness_and_remset(VerifyOption vo) const {
     }
   }
 
-  if (!is_humongous() && p != top()) {
+  if ((!is_humongous() || has_humongous_tail()) && p != top()) {
     log_error(gc, verify)("end of last object " PTR_FORMAT " does not match top " PTR_FORMAT,
                           p2i(p), p2i(top()));
     return true;
@@ -761,7 +762,7 @@ bool G1HeapRegion::verify_liveness_and_remset(VerifyOption vo) const {
 
 bool G1HeapRegion::verify(VerifyOption vo) const {
   // We cast p to an oop, so region-bottom must be an obj-start.
-  assert(!is_humongous() || is_starts_humongous(), "invariant");
+  assert(!is_humongous() || is_starts_humongous() || has_humongous_tail(), "invariant");
 
   if (verify_liveness_and_remset(vo)) {
     return true;
@@ -793,7 +794,7 @@ void G1HeapRegion::mangle_unused_area() {
 #endif
 
 void G1HeapRegion::object_iterate(ObjectClosure* blk) {
-  HeapWord* p = bottom();
+  HeapWord* p = has_humongous_tail() ? old_objects_start() : bottom();
   while (p < top()) {
     if (block_is_obj(p, parsable_bottom())) {
       blk->do_object(cast_to_oop(p));

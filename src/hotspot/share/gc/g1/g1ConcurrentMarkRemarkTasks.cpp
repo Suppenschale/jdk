@@ -82,6 +82,8 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
         reclaim_empty_region_common(hr);
         _g1h->free_humongous_region(hr, _local_cleanup_list);
       } else {
+
+        log_trace(gc_testing)("reclaim_empty_humongous_region tail");
         _local_humongous_tail_convert_list.append(hr);
       }
     };
@@ -110,6 +112,8 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
         auto on_humongous_region = [&] (G1HeapRegion* hr) {
           bool force_rebuild = (hr->is_continues_humongous() && hr->has_humongous_tail());
           if (force_rebuild) {
+
+            log_trace(gc_testing)("do_heap_region for liveness stuff tail");
             uint hrm_idx = hr->hrm_index();
             size_t obj_size = cast_to_oop<HeapWord*>(hr->humongous_start_region()->bottom())->size() * HeapWordSize;
             size_t tail_size = (obj_size % G1HeapRegion::GrainBytes);
@@ -179,7 +183,8 @@ void G1UpdateRegionLivenessAndSelectForRebuildTask::finish_tail_regions() {
     _cm->update_top_at_rebuild_start(hr);
 
     // We'll let scrubbing rebuild them, so remove and do not add the hole.
-    _g1h->free_humongous_region(hr, nullptr /* free_list */, true /* add_hole_in_tail */);
+    _g1h->remove_old_holes(hr);
+    _g1h->free_humongous_region(hr, nullptr /* free_list */, false /* add_hole_in_tail */);
 
     // Drop remembered set state. Remembered sets for humongous regions were for that humongous regions, do not bother
     // using it right away.

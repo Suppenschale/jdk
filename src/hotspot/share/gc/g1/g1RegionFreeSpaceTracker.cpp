@@ -657,6 +657,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_exact_hole(HeapWord* &root, size_t size
 
 HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, size_t min_size) const {
 
+    uint loop_break = 0;
     for (uint i = 0; i < _size; i++) {
 
         HeapWord* curr = list[i]; 
@@ -672,7 +673,8 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
             continue;
         }
 
-        while (curr != nullptr) {
+        loop_break = 0;
+        while (curr != nullptr && loop_break < 100) {
 
             size_t hole_size = get_size(curr);
 
@@ -681,6 +683,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
             } 
 
             curr = get_next(curr);
+            loop_break++;
         }
     }
 

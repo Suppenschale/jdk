@@ -67,6 +67,12 @@ class G1AdjustRegionClosure : public G1HeapRegionClosure {
       // work distribution.
       oop obj = cast_to_oop(r->humongous_start_region()->bottom());
       obj->oop_iterate(&cl, MemRegion(r->bottom(), r->top()));
+
+      // Also adjust tail pointers.
+      if (r->has_humongous_tail()) {
+        G1AdjustLiveClosure adjust(&cl);
+        r->apply_to_marked_objects(_bitmap, &adjust);
+      }
     } else if (!r->is_free()) {
       // Free regions do not contain objects to iterate. So skip them.
       G1AdjustLiveClosure adjust(&cl);

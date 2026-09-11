@@ -254,17 +254,27 @@ public:
     guarantee(!r->is_free() || !r->rem_set()->is_tracked(), "Remembered set for free region %u must be untracked, is %s", r->hrm_index(), r->rem_set()->get_state_str());
 
     if (r->is_continues_humongous()) {
-      // Verify that the continues humongous regions' remembered set state
-      // matches the one from the starts humongous region.
-      if (r->rem_set()->get_state_str() != r->humongous_start_region()->rem_set()->get_state_str()) {
-         log_error(gc, verify)("Remset states differ: Region %u (%s) remset %s with starts region %u (%s) remset %s",
+      // Verify that the continues humongous regions' remembered set state is Untracked (with no card set group).
+      if (r->rem_set()->is_tracked() || r->rem_set()->has_cset_group()) {
+         log_error(gc, verify)("Continues humongous must always be untracked and have no card set group: Region %u (%s) remset %s with card set group: %d",
                                r->hrm_index(),
                                r->get_short_type_str(),
                                r->rem_set()->get_state_str(),
-                               r->humongous_start_region()->hrm_index(),
-                               r->humongous_start_region()->get_short_type_str(),
-                               r->humongous_start_region()->rem_set()->get_state_str());
+                               r->rem_set()->has_cset_group());
          _failures = true;
+      }
+      if (r->has_humongous_tail()) {
+        if (r->verify(_vo)) {
+          _failures = true;
+        } else {
+          VerifyObjsInRegionClosure not_dead_yet_cl(r, _vo);
+          r->object_iterate(&not_dead_yet_cl);
+          if (r->live_bytes() < not_dead_yet_cl.live_bytes()) {
+            log_error(gc, verify)(HR_FORMAT " max_live_bytes %zu < calculated %zu",
+                                  HR_FORMAT_PARAMS(r), r->live_bytes(), not_dead_yet_cl.live_bytes());
+            _failures = true;
+          }
+        }
       }
     } else {
       if (r->verify(_vo)) {

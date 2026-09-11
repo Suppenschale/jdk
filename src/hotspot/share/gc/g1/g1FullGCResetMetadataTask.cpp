@@ -26,6 +26,10 @@
 #include "gc/g1/g1FullGCResetMetadataTask.hpp"
 #include "utilities/ticks.hpp"
 
+static bool add_humongous_tail_holes(G1HeapRegion* r) {
+ return G1UseHumongousHoles && r->is_continues_humongous() && r->old_objects_start() != nullptr;
+}
+
 G1FullGCResetMetadataTask::G1ResetMetadataClosure::G1ResetMetadataClosure(G1FullCollector* collector) :
   _g1h(G1CollectedHeap::heap()),
   _collector(collector) { }
@@ -40,7 +44,6 @@ bool G1FullGCResetMetadataTask::G1ResetMetadataClosure::do_heap_region(G1HeapReg
     hr->uninstall_cset_group();
   }
 
-
   uint const region_idx = hr->hrm_index();
   if (!_collector->is_compaction_target(region_idx)) {
     assert(!hr->is_free(), "all free regions should be compaction targets");
@@ -54,7 +57,9 @@ bool G1FullGCResetMetadataTask::G1ResetMetadataClosure::do_heap_region(G1HeapReg
   }
   // Reset data structures not valid after Full GC.
   reset_region_metadata(hr);
-
+  if (add_humongous_tail_holes(hr)) {
+    _g1h->add_potential_humongous_hole(hr, hr->top(), pointer_delta(hr->end(), hr->top()));
+  }
   return false;
 }
 
@@ -62,8 +67,10 @@ void G1FullGCResetMetadataTask::G1ResetMetadataClosure::scrub_skip_compacting_re
   assert(hr->needs_scrubbing_during_full_gc(), "must be");
 
   HeapWord* limit = hr->top();
-  HeapWord* current_obj = hr->bottom();
+  HeapWord* current_obj = hr->has_humongous_tail() ? hr->old_objects_start() : hr->bottom();
   G1CMBitMap* bitmap = _collector->mark_bitmap();
+
+  bool do_humongous_hole_updates = add_humongous_tail_holes(hr);
 
   while (current_obj < limit) {
     if (bitmap->is_marked(current_obj)) {
@@ -81,6 +88,9 @@ void G1FullGCResetMetadataTask::G1ResetMetadataClosure::scrub_skip_compacting_re
     HeapWord* scrub_end = bitmap->get_next_marked_addr(scrub_start, limit);
     assert(scrub_start != scrub_end, "must advance");
     hr->fill_range_with_dead_objects(scrub_start, scrub_end);
+    if (do_humongous_hole_updates) {
+      _g1h->add_potential_humongous_hole(hr, scrub_start, pointer_delta(scrub_end, scrub_start));
+    }
 
     current_obj = scrub_end;
   }

@@ -2867,6 +2867,7 @@ void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
   HeapWord* old_objects_start_save = hr->old_objects_start();
   hr->clear_humongous();
   if (has_tail) { // Implies G1UseHumongousHole
+
     assert(old_objects_start_save != nullptr, "must be");
     size_t begin_size = pointer_delta(old_objects_start_save, hr->bottom());
     hr->set_old(); // Just force old.
@@ -2877,9 +2878,6 @@ void G1CollectedHeap::free_humongous_region(G1HeapRegion* hr,
     hr->fill_with_dummy_object(hr->bottom(), begin_size); // Only updates BOT if old.
     if (add_hole_in_tail) {
       add_potential_old_hole(hr, hr->bottom(), begin_size);
-      if (concurrent_mark()->cm_thread()->in_progress()) {
-        concurrent_mark()->add_to_allocation_tree(MemRegion(hr->bottom(), begin_size));
-      }
     }
   } else {
     free_region(hr, free_list);
@@ -3007,7 +3005,7 @@ void G1CollectedHeap::set_used(size_t bytes) {
 }
 
 void G1CollectedHeap::remove_old_holes(G1HeapRegion* region) {
-  assert_at_safepoint_on_vm_thread();
+  assert_at_safepoint();
   _tracker.remove_region(region);
 }
 
@@ -3058,12 +3056,10 @@ HeapWord* G1CollectedHeap::find_old_hole(size_t min_word_size, size_t desired_wo
 
   Ticks start = Ticks::now();
   G1CollectedHeap* g1h = G1CollectedHeap::heap();
-  /*
-  if (g1h->collector_state()->mark_in_progress()) { // maybe in whole concurrent cycle?
+  if (g1h->collector_state()->mark_or_rebuild_in_progress() || g1h->collector_state()->in_concurrent_start_gc()) {
     // During concurrent start and marking do not support old gen holes (for now).
     return nullptr;
   }
-  */
   MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
   // Lock list and tree data structure for receiving a hole. 
   HeapWord* result = _tracker.find_old_hole(min_word_size, desired_word_size, actual_word_size);

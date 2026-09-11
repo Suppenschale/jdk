@@ -112,9 +112,9 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
     }
 
     // Helper used by both humongous objects and when chunking an object larger than the
-    // G1RebuildRemSetChunkSize. The heap region is needed check whether the region has
+    // G1RebuildRemSetChunkSize. The heap region checks whether the region has
     // been reclaimed during yielding.
-    void scan_large_object(G1HeapRegion* hr, const oop obj, MemRegion scan_range) {
+    void scan_large_object(G1HeapRegion* hr, const oop obj, MemRegion scan_range, bool is_humongous) {
       HeapWord* start = scan_range.start();
       HeapWord* limit = scan_range.end();
       do {
@@ -126,6 +126,12 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         add_processed_words(mr.word_size());
 
         if (yield_if_necessary(hr)) {
+          return;
+        }
+        if (is_humongous && !hr->is_humongous()) {
+          // The pause reclaimed the humongous region and turned it into old. If it has been
+          // wholly reclaimed, yield_if_necessary() above would have been true.
+          assert(hr->is_old(), "eager reclaim may only turn region into old.");
           return;
         }
 
@@ -146,7 +152,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
       } else if (obj_size > ProcessingYieldLimitInWords) {
         // Large object, needs to be chunked to avoid stalling safepoints.
         MemRegion mr(current, obj_size);
-        scan_large_object(hr, obj, mr);
+        scan_large_object(hr, obj, mr, false /* is_humongous */);
         // No need to add to _processed_words, this is all handled by the above call;
         // we also ignore the marking abort result of scan_large_object - we will check
         // again right afterwards.
@@ -242,10 +248,11 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
       HeapWord* humongous_end = hr->humongous_start_region()->bottom() + humongous->size();
       MemRegion mr(hr->bottom(), MIN2(hr->top(), humongous_end));
 
-      scan_large_object(hr, humongous, mr);
+      scan_large_object(hr, humongous, mr, true /* is_humongous */);
 
       // Also needs to scan+scrub the tail allocations, e.g. allocated-into area for remembered sets
       if (hr->has_humongous_tail()) {
+        log_trace(gc_testing)("scan_and_scrub_humongous_region tail");
         HeapWord* start = hr->old_objects_start();
         scan_and_scrub_region(hr, start, pb);
       }

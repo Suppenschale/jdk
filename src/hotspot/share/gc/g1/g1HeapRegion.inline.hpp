@@ -151,7 +151,7 @@ inline void G1HeapRegion::reset_after_full_gc_common() {
   // information.
   G1CollectedHeap::heap()->concurrent_mark()->reset_top_at_mark_start(this);
 
-  // Everything above bottom() is parsable and live.
+  // Everything above the parsable boundary (bottom() or old_objects_start()) is parsable and live.
   reset_parsable_bottom();
 
   _garbage_bytes = 0;
@@ -262,7 +262,7 @@ inline HeapWord* G1HeapRegion::parsable_bottom_acquire() const {
 }
 
 inline void G1HeapRegion::reset_parsable_bottom() {
-  AtomicAccess::release_store(&_parsable_bottom, bottom());
+  AtomicAccess::release_store(&_parsable_bottom, has_humongous_tail() ? old_objects_start() : bottom());
 }
 
 inline void G1HeapRegion::note_end_of_marking(HeapWord* top_at_mark_start, size_t marked_bytes, size_t incoming_refs) {

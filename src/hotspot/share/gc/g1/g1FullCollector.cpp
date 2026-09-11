@@ -255,7 +255,7 @@ void G1FullCollector::complete_collection(size_t allocation_word_size) {
 void G1FullCollector::before_marking_update_attribute_table(G1HeapRegion* hr) {
   if (hr->is_free()) {
     _region_attr_table.set_free(hr->hrm_index());
-  } else if (hr->is_humongous() || hr->has_pinned_objects()) {
+  } else if ((hr->is_humongous() && !hr->has_humongous_tail()) || hr->has_pinned_objects()) {
     // Humongous objects or pinned regions will never be moved in the "main"
     // compaction phase, but non-pinned regions might afterwards in a special phase.
     _region_attr_table.set_skip_compacting(hr->hrm_index());
@@ -422,7 +422,7 @@ void G1FullCollector::phase2c_prepare_serial_compaction() {
   for (uint i = start_serial + 1; i < _heap->max_num_regions(); i++) {
     if (is_compaction_target(i)) {
       G1HeapRegion* current = _heap->region_at(i);
-      set_compaction_top(current, current->bottom());
+      set_compaction_top(current, current->has_humongous_tail() ? current->old_objects_start() : current->bottom());
       serial_cp->add(current);
       current->apply_to_marked_objects(mark_bitmap(), &re_prepare);
     }
@@ -450,8 +450,11 @@ void G1FullCollector::phase2d_prepare_humongous_compaction() {
     } else if (hr->is_starts_humongous()) {
       size_t obj_size = cast_to_oop(hr->bottom())->size();
       uint num_regions = (uint)G1CollectedHeap::humongous_obj_size_in_regions(obj_size);
-      // Even during last-ditch compaction we should not move pinned humongous objects.
-      if (!hr->has_pinned_objects()) {
+
+      // Even during last-ditch compaction we should not move pinned humongous objects, or
+      // ones that have objects in their tail region (to simplify things).
+      bool tail_has_old_objects = G1CollectedHeap::heap()->heap_region_containing(hr->bottom() + obj_size - 1)->has_humongous_tail();
+      if (!hr->has_pinned_objects() && !tail_has_old_objects) {
         humongous_cp->forward_humongous(hr);
       }
       region_index += num_regions; // Advance over all humongous regions.
@@ -491,13 +494,12 @@ void G1FullCollector::phase4_do_compaction() {
 }
 
 void G1FullCollector::phase5_reset_metadata() {
+  _heap->clean_up_young_holes();
+  _heap->clean_up_old_holes();
   // Clear region metadata that is invalid after GC for all regions.
   GCTraceTime(Info, gc, phases) info("Phase 5: Reset Metadata", scope()->timer());
   G1FullGCResetMetadataTask task(this);
   run_task(&task);
-
-  _heap->clean_up_young_holes();
-  _heap->clean_up_old_holes();
 }
 
 void G1FullCollector::restore_marks() {
