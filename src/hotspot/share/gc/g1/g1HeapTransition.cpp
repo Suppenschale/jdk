@@ -72,10 +72,14 @@ struct G1HeapTransition::DetailedUsage : public StackObj {
   size_t _old_region_count;
   size_t _humongous_region_count;
 
+  size_t _humongous_tail_used;
+  size_t _humongous_tail_count;
+  size_t _humongous_tail_capacity;
+
   DetailedUsage() :
     _eden_used(0), _survivor_used(0), _old_used(0), _humongous_used(0),
     _eden_region_count(0), _survivor_region_count(0), _old_region_count(0),
-    _humongous_region_count(0) {}
+    _humongous_region_count(0), _humongous_tail_used(0), _humongous_tail_count(0), _humongous_tail_capacity(0) {}
 };
 
 class G1HeapTransition::DetailedUsageClosure: public G1HeapRegionClosure {
@@ -96,7 +100,9 @@ public:
 
         _usage._humongous_used += byte_size(r->bottom(), r->old_objects_start());
         //use new field
-        _usage._old_used += byte_size(r->old_objects_start(), r->top());
+        _usage._humongous_tail_used += byte_size(r->old_objects_start(), r->top());
+        _usage._humongous_tail_count++;
+        _usage._humongous_tail_capacity += byte_size(r->old_objects_start(), r->end());
       } else {
         _usage._humongous_used += r->used();
       }
@@ -174,6 +180,11 @@ void G1HeapTransition::print() {
                      _before._humongous_length, after._humongous_length);
   log_trace(gc, heap)(" Used: %zuK, Waste: %zuK",
                       usage._humongous_used / K, ((after._humongous_length * G1HeapRegion::GrainBytes) - usage._humongous_used) / K);
+
+  log_trace(gc, heap)("Humongous tails: %zu",
+                      usage._humongous_tail_count);
+  log_trace(gc, heap)(" Used: %zuK, Not used: %zuK",
+                      usage._humongous_tail_used / K, (usage._humongous_tail_capacity - usage._humongous_tail_used) / K);
 
   MetaspaceUtils::print_metaspace_change(_before._meta_sizes);
 }

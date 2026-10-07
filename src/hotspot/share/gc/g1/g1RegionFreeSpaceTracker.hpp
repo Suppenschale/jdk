@@ -31,8 +31,8 @@ class G1RegionFreeSpaceTracker {
 
         uint _size;
 
-        size_t _min_hole_size_young;
-        size_t _min_hole_size_old;
+        size_t _min_hole_size_young_in_words;
+        size_t _min_hole_size_old_in_words;
 
         uint MAX_DEPTH = 20;
 
@@ -73,11 +73,11 @@ class G1RegionFreeSpaceTracker {
                     mtGC> _object_desired_statistics_old;
 
 
-        size_t hit_young;
-        size_t all_young;
+        size_t _hit_young;
+        size_t _all_young;
 
-        size_t hit_old;
-        size_t all_old;
+        size_t _hit_old;
+        size_t _all_old;
 
 
     public:
@@ -90,6 +90,8 @@ class G1RegionFreeSpaceTracker {
         bool use_rbt() const;
         bool use_tree() const;
 
+        bool hole_in_list(HeapWord** list, G1HeapRegion* region, HeapWord* word);
+
         bool add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
         bool add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
         bool add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
@@ -97,7 +99,7 @@ class G1RegionFreeSpaceTracker {
         void set_hole_list(HeapWord* word, size_t size, HeapWord* next);
         ListHole* get_hole_list(HeapWord* word) const;
 
-        void set_hole_tree(HeapWord* word);
+        void set_hole_tree(HeapWord* word, size_t size_in_words = 0);
         TreeHole* get_hole_tree(HeapWord* word) const;
 
         void set_size(HeapWord* word, size_t size);
@@ -125,39 +127,54 @@ class G1RegionFreeSpaceTracker {
         bool is_black(HeapWord* word) const;
 
         void add_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* word, size_t size_in_words);
-        void add_hole_tree(HeapWord* &root, HeapWord* word, size_t size_in_words);
+        void add_hole_tree(HeapWord* &root, HeapWord* z, size_t size_in_words);
 
         void transplant(HeapWord* &root, HeapWord* u, HeapWord* v);
+        HeapWord* tree_minimum(HeapWord* x); 
 
-        bool is_left(HeapWord* word) const;        
-        bool is_right(HeapWord* word) const;
-
-        void rb_insert_fixup(HeapWord* &root, HeapWord* word);
-        void rb_remove_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent);
+        void rb_insert_fixup(HeapWord* &root, HeapWord* z);
+        void rb_delete_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent);
 
         void left_rotate(HeapWord* &root, HeapWord* x);
         void right_rotate(HeapWord* &root, HeapWord* x);
 
         HeapWord* remove_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* remove);
-        HeapWord* remove_hole_tree(HeapWord* &root, HeapWord* remove);
+        HeapWord* remove_hole_tree(HeapWord* &root, HeapWord* z);
 
         HeapWord* find_exact_hole(HeapWord* &root, size_t size) const;
-        HeapWord* find_first_fitting_hole(HeapWord** list, size_t min_size) const;
+        HeapWord* find_first_fitting_hole(HeapWord** list, size_t min_size, bool* exhausted) const;
         HeapWord* find_best_fitting_hole(HeapWord* &root, size_t min_size) const;
         bool is_splittable(size_t min_size, size_t hole_size) const;
 
-        HeapWord* find_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, bool young_gen);
-        HeapWord* find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
-        HeapWord* find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size);
+        HeapWord* find_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, bool young_gen, size_t* used_change, bool* holes_exhausted);
+        HeapWord* find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, size_t* used_change);
+        HeapWord* find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, size_t* used_change, bool* holes_exhausted);
 
-        HeapWord* split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen);
+        HeapWord* split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen, size_t* used_change);
 
         void clean_up_young_holes();
         void clean_up_old_holes();
         void remove_region(G1HeapRegion* region);
+        void clean_cards_for_old_holes(uint index);
 
         void dump_tree_node(HeapWord* word);
         void inorder_traversal(HeapWord* root);
+        void parse_list(HeapWord** list);
+        void parse_tree(HeapWord* root);
+        
+        bool check_synchronization(HeapWord* root, HeapWord** list) ;
+        void contains_node(HeapWord* tree_node, HeapWord* node, bool* check);
+        void check_node(HeapWord** list, HeapWord* node, bool* check);
+        bool hole_in_lists(HeapWord** list, HeapWord* node);
+
+        void visit_node(HeapWord* node, int* global_id);
+        bool verify_tree(HeapWord* &root) const;
+        bool verify_node(
+            HeapWord* node,
+            HeapWord* expected_parent,
+            HeapWord* min_node,
+            HeapWord* max_node,
+            int& black_height) const;
 
         void increment_young_min_statistic(size_t size_in_words);
         void increment_young_desired_statistic(size_t size_in_words);

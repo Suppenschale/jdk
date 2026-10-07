@@ -82,6 +82,9 @@ G1GCPhaseTimes::G1GCPhaseTimes(STWGCTimer* gc_timer, uint max_gc_threads) :
     _gc_par_phases[OptMergeRS]->create_thread_work_items(GCMergeRSWorkItemsStrings[i], i);
   }
 
+  _gc_par_phases[CleanHoles] = new WorkerDataArray<double>("CleanHoles", "Clean Holes (ms):", max_gc_threads);
+  _gc_par_phases[OptCleanHoles] = new WorkerDataArray<double>("OptCleanHoles", "Optional Clean Holes (ms):", max_gc_threads);
+
   _gc_par_phases[SweepRT] = new WorkerDataArray<double>("SweepRT", "Sweep (ms):", max_gc_threads);
   _gc_par_phases[ScanHR] = new WorkerDataArray<double>("ScanHR", "Scan Heap Roots (ms):", max_gc_threads);
   _gc_par_phases[OptScanHR] = new WorkerDataArray<double>("OptScanHR", "Optional Scan Heap Roots (ms):", max_gc_threads);
@@ -249,6 +252,8 @@ void G1GCPhaseTimes::record_gc_pause_end() {
       ASSERT_PHASE_UNINITIALIZED(MergeER);
       ASSERT_PHASE_UNINITIALIZED(MergeRS);
       ASSERT_PHASE_UNINITIALIZED(OptMergeRS);
+      ASSERT_PHASE_UNINITIALIZED(CleanHoles);
+      ASSERT_PHASE_UNINITIALIZED(OptCleanHoles);
       ASSERT_PHASE_UNINITIALIZED(SweepRT);
       ASSERT_PHASE_UNINITIALIZED(ScanHR);
       ASSERT_PHASE_UNINITIALIZED(CodeRoots);
@@ -441,6 +446,9 @@ double G1GCPhaseTimes::print_evacuate_optional_collection_set() const {
 
     debug_time("Prepare Optional Merge Heap Roots", _cur_optional_prepare_merge_heap_roots_time_ms);
     debug_phase(_gc_par_phases[OptMergeRS]);
+    if (G1UseOldHoles || G1UseHumongousHoles) {
+      debug_phase(_gc_par_phases[OptCleanHoles]);
+    }
 
     info_time("Evacuate Optional Collection Set", _cur_optional_evac_time_ms);
     debug_phase(_gc_par_phases[OptScanHR]);
@@ -459,6 +467,10 @@ double G1GCPhaseTimes::print_evacuate_initial_collection_set() const {
 
   debug_time("Merge Refinement Table", _cur_merge_refinement_table_time_ms);
   debug_phase(_gc_par_phases[SweepRT], 1);
+
+  if (G1UseOldHoles || G1UseHumongousHoles) {
+    debug_phase(_gc_par_phases[CleanHoles], 1);
+  }
 
   info_time("Evacuate Collection Set", _cur_collection_initial_evac_time_ms);
 

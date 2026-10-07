@@ -122,7 +122,7 @@ public:
 
 private:
 
-  void reset_after_full_gc_common();
+  void reset_after_full_gc_common(size_t garbage_bytes);
 
   void clear(bool mangle_space);
 
@@ -174,7 +174,7 @@ public:
   // Update heap region that has been compacted to be consistent after Full GC.
   void reset_compacted_after_full_gc(HeapWord* new_top);
   // Update skip-compacting heap region to be consistent after Full GC.
-  void reset_skip_compacting_after_full_gc();
+  void reset_skip_compacting_after_full_gc(size_t garbage_bytes);
 
   // All allocated blocks are occupied by objects in a G1HeapRegion.
   bool block_is_obj(const HeapWord* p, HeapWord* pb) const;
@@ -335,6 +335,9 @@ public:
 
   // A lower bound on the amount of garbage bytes in the region.
   size_t garbage_bytes() const { return _garbage_bytes; }
+
+  void sub_garbage_bytes(size_t value) { guarantee(_garbage_bytes >= value, "must be"); _garbage_bytes -= value; }
+  void add_garbage_bytes(size_t value) { _garbage_bytes += value;}
 
   // Return the amount of bytes we'll reclaim if we collect this
   // region. This includes not only the known garbage bytes in the

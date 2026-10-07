@@ -58,6 +58,8 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     MergeER = StrongOopStorageSetRoots + EnumRange<OopStorageSet::StrongId>().size(),
     MergeRS,
     OptMergeRS,
+    CleanHoles,
+    OptCleanHoles,
     SweepRT,
     ScanHR,
     OptScanHR,

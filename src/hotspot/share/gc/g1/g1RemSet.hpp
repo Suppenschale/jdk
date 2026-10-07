@@ -77,6 +77,8 @@ public:
   G1RemSet(G1CollectedHeap* g1h);
   ~G1RemSet();
 
+  bool will_be_scanned(HeapWord* value) const;
+
   // Scan all cards in the non-collection set regions that potentially contain
   // references into the current whole collection set.
   void scan_heap_roots(G1ParScanThreadState* pss,

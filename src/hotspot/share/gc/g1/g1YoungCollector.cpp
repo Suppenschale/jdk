@@ -35,6 +35,7 @@
 #include "gc/g1/g1ConcurrentMark.hpp"
 #include "gc/g1/g1EvacFailureRegions.inline.hpp"
 #include "gc/g1/g1EvacInfo.hpp"
+#include "gc/g1/g1GCParPhaseTimesTracker.hpp"
 #include "gc/g1/g1GCPhaseTimes.hpp"
 #include "gc/g1/g1HeapRegionPrinter.hpp"
 #include "gc/g1/g1MonitoringSupport.hpp"
@@ -788,11 +789,66 @@ public:
   { }
 };
 
+class G1CleanHolesTask : public WorkerTask {
+  uint _num_regions;
+  uint _max_workers;
+  bool _initial_evacuation;
+
+  volatile uint _cur_region_claim;
+
+  static const uint RegionsPerClaim = 64;
+public:
+  G1CleanHolesTask(uint num_regions, uint max_workers, bool initial_evacuation) :
+    WorkerTask("Clean Holes"), _num_regions(num_regions), _max_workers(max_workers), _initial_evacuation(initial_evacuation), _cur_region_claim(0) { }
+
+  uint num_optimal_workers() const {
+    return MIN2(align_up(_num_regions, RegionsPerClaim) / RegionsPerClaim, _max_workers);
+  }
+
+  void work(uint worker_id) override {
+    G1GCParPhaseTimesTracker x(G1CollectedHeap::heap()->phase_times(),
+                               _initial_evacuation ? G1GCPhaseTimes::CleanHoles : G1GCPhaseTimes::OptCleanHoles,
+                               worker_id,
+                               !_initial_evacuation /* allow multiple invocation */);
+
+    G1CollectedHeap* g1h = G1CollectedHeap::heap();
+    for (;;) {
+      if (AtomicAccess::load(&_cur_region_claim) >= _num_regions) {
+        break;
+      }
+      uint next = AtomicAccess::fetch_then_add(&_cur_region_claim, RegionsPerClaim);
+      if (next >= _num_regions) {
+        break;
+      }
+      uint range_end = MIN2(next + RegionsPerClaim, _num_regions);
+      for (uint i = next; i < range_end; i++) {
+        g1h->clean_cards_for_old_holes(i);
+      }
+    }
+  }
+};
+
+void G1YoungCollector::merge_heap_roots(G1ParScanThreadStateSet* per_thread_states,  bool initial_evacuation) {
+  rem_set()->merge_heap_roots(initial_evacuation);
+  // Clean stray/outdated remembered set cards.
+  if (G1UseHumongousHoles || G1UseOldHoles) { // Clean out stale cards from eligible holes.
+    WorkerThreads* workers = _g1h->workers();
+    G1CleanHolesTask cl(_g1h->max_num_regions(), workers->active_workers(), initial_evacuation);
+    log_debug(gc, ergo)("Running %s using %u workers for %u regions",
+                        cl.name(), cl.num_optimal_workers(), _g1h->max_num_regions());
+    workers->run_task(&cl, cl.num_optimal_workers());
+
+    for (uint i = 0; i < per_thread_states->num_workers(); i++) {
+      per_thread_states->state_for_worker(i)->clean_plab_cards(rem_set());
+    }
+  }
+}
+
 void G1YoungCollector::evacuate_initial_collection_set(G1ParScanThreadStateSet* per_thread_states,
                                                       bool has_optional_evacuation_work) {
   G1GCPhaseTimes* p = phase_times();
 
-  rem_set()->merge_heap_roots(true /* initial_evacuation */);
+  merge_heap_roots(per_thread_states, true /* initial_evacuation */);
 
   Tickspan task_time;
   const uint num_workers = workers()->active_workers();
@@ -878,7 +934,7 @@ void G1YoungCollector::evacuate_optional_collection_set(G1ParScanThreadStateSet*
       break;
     }
 
-    rem_set()->merge_heap_roots(false /* initial_evacuation */);
+    merge_heap_roots(per_thread_states,  false /* initial_evacuation */);
 
     evacuate_next_optional_regions(per_thread_states);
 

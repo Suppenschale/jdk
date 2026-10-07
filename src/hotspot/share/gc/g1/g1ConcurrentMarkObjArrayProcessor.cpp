@@ -61,9 +61,10 @@ size_t G1CMObjArrayProcessor::process_slice(HeapWord* slice) {
   G1CollectedHeap* g1h = G1CollectedHeap::heap();
   G1HeapRegion* r = g1h->heap_region_containing(slice);
 
-  HeapWord* const start_address = r->is_humongous() ?
-                                  r->humongous_start_region()->bottom() :
-                                  r->block_start(slice);
+  HeapWord* const start_address = r->is_humongous()
+                               && (!r->has_humongous_tail() || slice < r->old_objects_start()) // Do not assume that there is only a humongous object in humongous regions. Tails may also contain to-be-sliced objects.
+                                ? r->humongous_start_region()->bottom()
+                                : r->block_start(slice);
 
   assert(cast_to_oop(start_address)->is_objArray(), "Address " PTR_FORMAT " does not refer to an object array ", p2i(start_address));
   assert(start_address < slice,

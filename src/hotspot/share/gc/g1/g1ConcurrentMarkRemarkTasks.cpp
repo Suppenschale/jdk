@@ -115,8 +115,10 @@ struct G1UpdateRegionLivenessAndSelectForRebuildTask::G1OnRegionClosure : public
 
             log_trace(gc_testing)("do_heap_region for liveness stuff tail");
             uint hrm_idx = hr->hrm_index();
-            size_t obj_size = cast_to_oop<HeapWord*>(hr->humongous_start_region()->bottom())->size() * HeapWordSize;
-            size_t tail_size = (obj_size % G1HeapRegion::GrainBytes);
+            // Adds the filler after the object tail as "live" - this is somewhat imprecise, but
+            // fixes garbage-bytes accounting. Potentially it is better to fix the verification during
+            // Full gc instead.
+            size_t tail_size = pointer_delta(hr->old_objects_start(), hr->bottom()) * HeapWordSize;
             hr->note_end_of_marking(_cm->top_at_mark_start(hrm_idx),
                                     _cm->live_bytes(hrm_idx) + tail_size,
                                     _cm->incoming_refs(hrm_idx));
@@ -184,7 +186,7 @@ void G1UpdateRegionLivenessAndSelectForRebuildTask::finish_tail_regions() {
 
     // We'll let scrubbing rebuild them, so remove and do not add the hole.
     _g1h->remove_old_holes(hr);
-    _g1h->free_humongous_region(hr, nullptr /* free_list */, false /* add_hole_in_tail */);
+    _g1h->free_humongous_region(hr, nullptr /* free_list */, false /* add_hole_in_tail */, true /* garbage_already_accounted_for_tail */);
 
     // Drop remembered set state. Remembered sets for humongous regions were for that humongous regions, do not bother
     // using it right away.

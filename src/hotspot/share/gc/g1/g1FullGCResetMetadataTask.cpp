@@ -26,10 +26,6 @@
 #include "gc/g1/g1FullGCResetMetadataTask.hpp"
 #include "utilities/ticks.hpp"
 
-static bool add_humongous_tail_holes(G1HeapRegion* r) {
- return G1UseHumongousHoles && r->is_continues_humongous() && r->old_objects_start() != nullptr;
-}
-
 G1FullGCResetMetadataTask::G1ResetMetadataClosure::G1ResetMetadataClosure(G1FullCollector* collector) :
   _g1h(G1CollectedHeap::heap()),
   _collector(collector) { }
@@ -44,33 +40,36 @@ bool G1FullGCResetMetadataTask::G1ResetMetadataClosure::do_heap_region(G1HeapReg
     hr->uninstall_cset_group();
   }
 
+  size_t garbage_words = 0;
   uint const region_idx = hr->hrm_index();
   if (!_collector->is_compaction_target(region_idx)) {
     assert(!hr->is_free(), "all free regions should be compaction targets");
     assert(_collector->is_skip_compacting(region_idx), "must be");
     if (hr->needs_scrubbing_during_full_gc()) {
-      scrub_skip_compacting_region(hr, hr->is_young());
+      garbage_words = scrub_skip_compacting_region(hr, hr->is_young());
     }
     if (_collector->is_skip_compacting(region_idx)) {
-      reset_skip_compacting(hr);
+      reset_skip_compacting(hr, garbage_words);
     }
   }
   // Reset data structures not valid after Full GC.
   reset_region_metadata(hr);
-  if (add_humongous_tail_holes(hr)) {
-    _g1h->add_potential_humongous_hole(hr, hr->top(), pointer_delta(hr->end(), hr->top()));
+  if (_g1h->should_add_hole(hr) && !hr->is_empty()) {
+    _g1h->add_hole_between_top_and_end(hr, false /* update_used */); // Usage accounting will be done again later, avoid making it temporarily wrong.
   }
   return false;
 }
 
-void G1FullGCResetMetadataTask::G1ResetMetadataClosure::scrub_skip_compacting_region(G1HeapRegion* hr, bool update_bot_for_live) {
+size_t G1FullGCResetMetadataTask::G1ResetMetadataClosure::scrub_skip_compacting_region(G1HeapRegion* hr, bool update_bot_for_live) {
   assert(hr->needs_scrubbing_during_full_gc(), "must be");
 
   HeapWord* limit = hr->top();
   HeapWord* current_obj = hr->has_humongous_tail() ? hr->old_objects_start() : hr->bottom();
   G1CMBitMap* bitmap = _collector->mark_bitmap();
 
-  bool do_humongous_hole_updates = add_humongous_tail_holes(hr);
+  size_t result = 0;
+
+  bool do_hole_updates = _g1h->should_add_hole(hr);
 
   while (current_obj < limit) {
     if (bitmap->is_marked(current_obj)) {
@@ -86,17 +85,21 @@ void G1FullGCResetMetadataTask::G1ResetMetadataClosure::scrub_skip_compacting_re
     // marked object.
     HeapWord* scrub_start = current_obj;
     HeapWord* scrub_end = bitmap->get_next_marked_addr(scrub_start, limit);
+    result += pointer_delta(scrub_end, scrub_start);
+
     assert(scrub_start != scrub_end, "must advance");
     hr->fill_range_with_dead_objects(scrub_start, scrub_end);
-    if (do_humongous_hole_updates) {
-      _g1h->add_potential_humongous_hole(hr, scrub_start, pointer_delta(scrub_end, scrub_start));
+    if (do_hole_updates) {
+      _g1h->add_potential_old_hole(hr, scrub_start, pointer_delta(scrub_end, scrub_start));
     }
 
     current_obj = scrub_end;
   }
+  // Just to keep old behavior if holes are disabled.
+  return do_hole_updates ? result : 0;
 }
 
-void G1FullGCResetMetadataTask::G1ResetMetadataClosure::reset_skip_compacting(G1HeapRegion* hr) {
+void G1FullGCResetMetadataTask::G1ResetMetadataClosure::reset_skip_compacting(G1HeapRegion* hr, size_t garbage_words) {
 #ifdef ASSERT
   uint region_index = hr->hrm_index();
   assert(_collector->is_skip_compacting(region_index), "Only call on is_skip_compacting regions");
@@ -114,7 +117,7 @@ void G1FullGCResetMetadataTask::G1ResetMetadataClosure::reset_skip_compacting(G1
          "region %u compaction_top " PTR_FORMAT " must not be different from bottom " PTR_FORMAT,
          hr->hrm_index(), p2i(_collector->compaction_top(hr)), p2i(hr->bottom()));
 #endif
-  hr->reset_skip_compacting_after_full_gc();
+  hr->reset_skip_compacting_after_full_gc(garbage_words * HeapWordSize);
 }
 
 void G1FullGCResetMetadataTask::work(uint worker_id) {

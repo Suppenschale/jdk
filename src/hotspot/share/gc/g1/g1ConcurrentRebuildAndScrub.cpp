@@ -114,7 +114,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
     // Helper used by both humongous objects and when chunking an object larger than the
     // G1RebuildRemSetChunkSize. The heap region checks whether the region has
     // been reclaimed during yielding.
-    void scan_large_object(G1HeapRegion* hr, const oop obj, MemRegion scan_range, bool is_humongous) {
+    bool scan_large_object(G1HeapRegion* hr, const oop obj, MemRegion scan_range, bool is_humongous) {
       HeapWord* start = scan_range.start();
       HeapWord* limit = scan_range.end();
       do {
@@ -126,18 +126,19 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         add_processed_words(mr.word_size());
 
         if (yield_if_necessary(hr)) {
-          return;
+          return true;
         }
         if (is_humongous && !hr->is_humongous()) {
           // The pause reclaimed the humongous region and turned it into old. If it has been
           // wholly reclaimed, yield_if_necessary() above would have been true.
           assert(hr->is_old(), "eager reclaim may only turn region into old.");
-          return;
+          return false;
         }
 
         // Step to next chunk of the large object.
         start = mr.end();
       } while (start < limit);
+      return false;
     }
 
     // Scan for references into regions that need remembered set update for the given
@@ -169,7 +170,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
 
     // Scan or scrub depending on if addr is marked.
     HeapWord* scan_or_scrub(G1HeapRegion* hr, HeapWord* addr, HeapWord* limit) {
-      if (_bitmap->is_marked(addr) || _cm->check_left_allocated_objects(addr)) { // FIXME: check if second condition needed? We should remove all holes, don't we?
+      if (_bitmap->is_marked(addr)) {
         //  Live object, need to scan to rebuild remembered sets for this object.
         return addr + scan_object(hr, addr);
       } else {
@@ -248,13 +249,17 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
       HeapWord* humongous_end = hr->humongous_start_region()->bottom() + humongous->size();
       MemRegion mr(hr->bottom(), MIN2(hr->top(), humongous_end));
 
-      scan_large_object(hr, humongous, mr, true /* is_humongous */);
+      bool aborted = scan_large_object(hr, humongous, mr, true /* is_humongous */);
 
-      // Also needs to scan+scrub the tail allocations, e.g. allocated-into area for remembered sets
-      if (hr->has_humongous_tail()) {
-        log_trace(gc_testing)("scan_and_scrub_humongous_region tail");
-        HeapWord* start = hr->old_objects_start();
-        scan_and_scrub_region(hr, start, pb);
+      if (aborted) {
+        return;
+      }
+      // Also needs to scan+scrub the tail allocations, e.g. allocated-into area for remembered sets.
+      // The tail region might have been turned into old, so scan + scrub it; Fine to do that from bottom
+      // as we only added a filler object in there.
+      if (hr->has_humongous_tail() || hr->is_old()) {
+        HeapWord* start = !hr->is_old() ? hr->old_objects_start() : hr->bottom();
+        scan_and_scrub_region(hr, start, MAX2(start, pb));
       }
     }
 
@@ -292,7 +297,7 @@ class G1RebuildRSAndScrubTask : public WorkerTask {
         // Needs scanning (or in case of tail regions, scrubbing).
         scan_and_scrub_humongous_region(hr, pb);
       }
-
+      // The [top(), end()[ hole will be added in the Cleanup pause.
       return _cm->has_aborted();
     }
   };

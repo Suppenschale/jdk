@@ -43,9 +43,10 @@ class G1CardTable;
 class G1CollectionSet;
 class G1EvacFailureRegions;
 class G1EvacuationRootClosures;
+class G1HeapRegion;
 class G1OopStarChunkedList;
 class G1PLABAllocator;
-class G1HeapRegion;
+class G1RemSet;
 class outputStream;
 
 class G1ParScanThreadState : public CHeapObj<mtGC> {
@@ -238,6 +239,8 @@ public:
 
   Tickspan trim_ticks() const;
   void reset_trim_ticks();
+
+  void clean_plab_cards(G1RemSet* rem_set);
 
   void record_evacuation_failed_region(G1HeapRegion* r, uint worker_id, bool cause_pinned);
   // An attempt to evacuate "obj" has failed; take necessary steps.

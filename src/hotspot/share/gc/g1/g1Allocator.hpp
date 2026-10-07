@@ -32,6 +32,7 @@
 
 class G1EvacInfo;
 class G1NUMA;
+class G1RemSet;
 
 // Interface to keep track of which regions G1 is currently allocating into. Provides
 // some accessors (e.g. allocating into them, or getting their occupancy).
@@ -43,6 +44,7 @@ private:
 
   bool _survivor_is_full;
   bool _old_is_full;
+  bool _no_more_old_holes;
 
   // The number of MutatorAllocRegions used, one per memory node.
   size_t _num_alloc_regions;
@@ -62,9 +64,11 @@ private:
 
   bool survivor_is_full() const;
   bool old_is_full() const;
+  bool no_more_old_holes() const;
 
   void set_survivor_full();
   void set_old_full();
+  void set_no_more_old_holes();
 
   void reuse_retained_old_region(G1EvacInfo* evacuation_info,
                                  OldGCAllocRegion* old,
@@ -79,12 +83,14 @@ private:
   HeapWord* survivor_attempt_allocation(uint node_index,
                                         size_t min_word_size,
                                         size_t desired_word_size,
-                                        size_t* actual_word_size);
+                                        size_t* actual_word_size,
+                                        bool* no_more_allocation_possible);
 
   // Allocation attempt during GC for an old object / PLAB.
   HeapWord* old_attempt_allocation(size_t min_word_size,
                                    size_t desired_word_size,
-                                   size_t* actual_word_size);
+                                   size_t* actual_word_size,
+                                   bool* no_more_allocation_possible);
 
 public:
   G1Allocator(G1CollectedHeap* heap);
@@ -129,14 +135,15 @@ public:
   // may not be a humongous - it must fit into a single heap region.
   HeapWord* par_allocate_during_gc(G1HeapRegionAttr dest,
                                    uint node_index,
-                                   size_t word_size
-                                   );
+                                   size_t word_size,
+                                   bool* no_more_allocation_possible);
 
   HeapWord* par_allocate_during_gc(G1HeapRegionAttr dest,
                                    uint node_index,
                                    size_t min_word_size,
                                    size_t desired_word_size,
-                                   size_t* actual_word_size);
+                                   size_t* actual_word_siz,
+                                   bool* no_more_allocation_possible);
 };
 
 // Manages the PLABs used during garbage collection. Interface for allocation from PLABs.
@@ -219,6 +226,8 @@ public:
                             size_t word_sz,
                             bool* refill_failed,
                             uint node_index);
+
+  void clean_plab_cards(G1RemSet* rem_set);
 
   void undo_allocation(G1HeapRegionAttr dest, HeapWord* obj, size_t word_sz, uint node_index);
 };

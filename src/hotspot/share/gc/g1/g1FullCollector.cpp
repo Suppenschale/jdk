@@ -477,6 +477,7 @@ void G1FullCollector::phase3_adjust_pointers() {
 }
 
 void G1FullCollector::phase4_do_compaction() {
+  _heap->clean_up_old_holes(); // Avoid issues with the transient holes generated during set_humongous_metadata().
   // Compact the heap using the compaction queues created in phase 2.
   GCTraceTime(Info, gc, phases) info("Phase 4: Compact heap", scope()->timer());
   G1FullGCCompactTask task(this);

@@ -214,8 +214,7 @@ protected:
   virtual void stop() = 0;
 
  public:
-
-  static inline size_t filler_array_max_size() {
+   static inline size_t filler_array_max_size() {
     return _filler_array_max_size;
   }
 

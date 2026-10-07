@@ -96,6 +96,8 @@ class G1YoungCollector {
   void set_young_collection_default_active_worker_threads();
 
   void pre_evacuate_collection_set(G1EvacInfo* evacuation_info);
+
+  void merge_heap_roots(G1ParScanThreadStateSet* per_thread_states, bool initial_evacuation);
   // Actually do the work of evacuating the parts of the collection set.
   // The has_optional_evacuation_work flag for the initial collection set
   // evacuation indicates whether one or more optional evacuation steps may

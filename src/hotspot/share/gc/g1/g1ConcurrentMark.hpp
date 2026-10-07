@@ -551,28 +551,7 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // True when Remark pause selected regions for rebuilding.
   bool _needs_remembered_set_rebuild;
 
-private:
-
-  struct MemRegionComparator {
-    // Assume that no MemRegion can overlap
-    static RBTreeOrdering cmp(HeapWord* a, HeapWord* b) {
-      if (a < b) return RBTreeOrdering::LT;
-      if (a > b) return RBTreeOrdering::GT;
-      return RBTreeOrdering::EQ;
-    }
-  };
-
-  typedef RBTreeCHeap<HeapWord*, MemRegion, MemRegionComparator, mtGC> AllocationTree; 
-
-  // Tree of all MemRegions allocated to the left of any TAMS
-  AllocationTree _left_allocated_objects_tree;
 public:
-  // Add a region to AllocationTree
-  void add_to_allocation_tree(MemRegion mr);
-
-  // Check if the word is part of any MemRegion interval
-  bool check_left_allocated_objects(HeapWord* word) const;
-
   // To be called when an object is marked the first time, e.g. after a successful
   // mark_in_bitmap call. Updates various statistics data.
   void add_to_liveness(uint worker_id, oop const obj, size_t size);

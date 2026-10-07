@@ -718,7 +718,8 @@ public:
   // this for a particular region at once.
   void free_humongous_region(G1HeapRegion* hr,
                              G1FreeRegionList* free_list,
-                             bool add_hole_in_tail = false);
+                             bool add_hole_in_tail = false,
+                             bool garbage_already_accounted_for_tail = false);
 
   // Execute func(G1HeapRegion* r, bool is_last) on every region covered by the
   // given range.
@@ -779,6 +780,12 @@ private:
   void verify_after_young_collection(G1HeapVerifier::G1VerifyType type);
 
 public:
+
+  // Expose the protected CollectedHeap helper so G1-internal helper
+  // classes (e.g. G1RegionFreeSpaceTracker) can compute filler layout.
+  static size_t filler_array_min_size() { return CollectedHeap::filler_array_min_size(); }
+
+  
   // Start a concurrent cycle.
   void start_concurrent_cycle(bool concurrent_operation_is_full_mark);
 
@@ -1072,13 +1079,16 @@ public:
  public:
 
   // hole tracker methods  
+  void clean_cards_for_old_holes(uint index);
   void remove_old_holes(G1HeapRegion* region);
+  bool should_add_hole(G1HeapRegion* region);
+  void add_hole_between_top_and_end(G1HeapRegion* region, bool update_used = true);
   void add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
   void add_potential_humongous_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words);
   void add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words); 
 
   HeapWord* find_young_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size); 
-  HeapWord* find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size); 
+  HeapWord* find_old_hole(size_t min_word_size, size_t desired_word_size, size_t* actual_word_size, bool* holes_exhausted); 
 
   void clean_up_young_holes();
   void clean_up_old_holes();

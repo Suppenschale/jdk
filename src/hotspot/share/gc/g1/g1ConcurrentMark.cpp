@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -514,8 +514,7 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
   _region_mark_stats(NEW_C_HEAP_ARRAY(G1RegionMarkStats, _g1h->max_num_regions(), mtGC)),
   _top_at_mark_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
   _top_at_rebuild_starts(NEW_C_HEAP_ARRAY(HeapWord*, _g1h->max_num_regions(), mtGC)),
-  _needs_remembered_set_rebuild(false),
-  _left_allocated_objects_tree()
+  _needs_remembered_set_rebuild(false)
 {
   assert(G1CGC_lock != nullptr, "CGC_lock must be initialized");
 
@@ -553,11 +552,6 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
   }
 
   reset_at_marking_complete();
-}
-
-bool G1ConcurrentMark::check_left_allocated_objects(HeapWord* word) const {
-  RBNode<HeapWord*, MemRegion>* node = _left_allocated_objects_tree.closest_leq(word);
-  return node != nullptr && node->val().contains(word);
 }
 
 void G1ConcurrentMark::reset() {
@@ -816,9 +810,6 @@ void G1ConcurrentMark::cleanup_for_next_mark() {
   guarantee(!_g1h->collector_state()->mark_or_rebuild_in_progress(), "invariant");
 
   clear_bitmap(_concurrent_workers, true);
-
-  // Clears tree of MemRegions allocated during marking
-  _left_allocated_objects_tree.remove_all();
 
   // Repeat the asserts from above.
   guarantee(cm_thread()->in_progress(), "invariant");
@@ -1279,6 +1270,9 @@ void G1ConcurrentMark::remark() {
       log_debug(gc,ergo)("Running %s using %u workers for %u regions in heap", cl.name(), num_workers, _g1h->num_committed_regions());
       _g1h->workers()->run_task(&cl, num_workers);
 
+      // Scrubbing will rebuild them.
+      _g1h->clean_up_old_holes();
+
       cl.finish_tail_regions();
       log_debug(gc, remset, tracking)("Remembered Set Tracking update regions total %u, selected %u",
                                         _g1h->num_committed_regions(), cl.total_selected_for_rebuild());
@@ -1373,6 +1367,25 @@ public:
   }
 };
 
+class G1UpdateTopEndHole : public G1HeapRegionClosure {
+  G1CollectedHeap* _g1h;
+
+public:
+  G1UpdateTopEndHole(G1CollectedHeap* g1h) : _g1h(g1h) { }
+
+  bool do_heap_region(G1HeapRegion* r) override {
+    if (_g1h->concurrent_mark()->top_at_rebuild_start(r) != nullptr) {
+      // Only old or humongous regions should have a TARS. This is important for
+      // the latter add_hole_between_top_and_end() call as it would add holes to
+      // regions we do not want them added.
+      precond(r->is_old_or_humongous());
+      _g1h->add_hole_between_top_and_end(r);
+    }
+
+    return false;
+  }
+};
+
 void G1ConcurrentMark::cleanup() {
   assert_at_safepoint_on_vm_thread();
 
@@ -1387,6 +1400,12 @@ void G1ConcurrentMark::cleanup() {
   double start = os::elapsedTime();
 
   verify_during_pause(G1HeapVerifier::G1VerifyCleanup, VerifyLocation::CleanupBefore);
+
+  // Scrubbing also runs when no remembered sets need rebuilding.
+  if (G1UseOldHoles || G1UseHumongousHoles) {
+    G1UpdateTopEndHole cl(_g1h);
+    _g1h->heap_region_iterate(&cl);
+  }
 
   if (needs_remembered_set_rebuild()) {
     // Update the remset tracking information as well as marking all regions

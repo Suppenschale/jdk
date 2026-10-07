@@ -69,6 +69,17 @@ bool G1FullGCPrepareTask::has_free_compaction_targets() {
   return _has_free_compaction_targets;
 }
 
+bool G1FullGCPrepareTask::compaction_point_has_fully_empty_regions(G1FullGCCompactionPoint* current) {
+  G1HeapRegion* cur_region = current->current_region();
+  GrowableArray<G1HeapRegion*>* regions = current->regions();
+  for (int i = regions->find(cur_region) + 1; i < regions->length(); i++) {
+    if (!regions->at(i)->is_humongous()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void G1FullGCPrepareTask::work(uint worker_id) {
   Ticks start = Ticks::now();
   // Calculate the target locations for the objects in the non-free regions of
@@ -88,7 +99,8 @@ void G1FullGCPrepareTask::work(uint worker_id) {
     // - any regions in queue, so no free ones either.
     // - and the current region is not the last one in the list.
     if (compaction_point->has_regions() &&
-        compaction_point->current_region() != compaction_point->regions()->last()) {
+        compaction_point->current_region() != compaction_point->regions()->last() &&
+        compaction_point_has_fully_empty_regions(compaction_point)) {
       set_has_free_compaction_targets();
     }
   }

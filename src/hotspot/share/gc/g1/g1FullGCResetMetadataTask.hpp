@@ -40,9 +40,9 @@ class G1FullGCResetMetadataTask : public G1FullGCTask {
     // Scrub all runs of dead objects within the given region by putting filler
     // objects and updating the corresponding BOT. If update_bot_for_live is true,
     // also update the BOT for live objects.
-    void scrub_skip_compacting_region(G1HeapRegion* hr, bool update_bot_for_live);
+    size_t scrub_skip_compacting_region(G1HeapRegion* hr, bool update_bot_for_live);
 
-    void reset_skip_compacting(G1HeapRegion* r);
+    void reset_skip_compacting(G1HeapRegion* r, size_t garbage_words);
 
   public:
     G1ResetMetadataClosure(G1FullCollector* collector);

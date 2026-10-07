@@ -137,16 +137,16 @@ inline void G1HeapRegion::prepare_for_full_gc() {
 inline void G1HeapRegion::reset_compacted_after_full_gc(HeapWord* new_top) {
   set_top(new_top);
 
-  reset_after_full_gc_common();
+  reset_after_full_gc_common(0);
 }
 
-inline void G1HeapRegion::reset_skip_compacting_after_full_gc() {
+inline void G1HeapRegion::reset_skip_compacting_after_full_gc(size_t garbage_bytes) {
   assert(!is_free(), "must be");
 
-  reset_after_full_gc_common();
+  reset_after_full_gc_common(garbage_bytes);
 }
 
-inline void G1HeapRegion::reset_after_full_gc_common() {
+inline void G1HeapRegion::reset_after_full_gc_common(size_t garbage_bytes) {
   // After a full gc the mark information in a movable region is invalid. Reset marking
   // information.
   G1CollectedHeap::heap()->concurrent_mark()->reset_top_at_mark_start(this);
@@ -154,7 +154,7 @@ inline void G1HeapRegion::reset_after_full_gc_common() {
   // Everything above the parsable boundary (bottom() or old_objects_start()) is parsable and live.
   reset_parsable_bottom();
 
-  _garbage_bytes = 0;
+  _garbage_bytes = garbage_bytes;
 
   _incoming_refs = 0;
 
@@ -307,9 +307,17 @@ HeapWord* G1HeapRegion::do_oops_on_memregion_in_humongous(MemRegion mr,
     return nullptr;
   }
 
-  if (has_humongous_tail() && old_objects_start() <= mr.start() && mr.start() <= top()) {
-      oops_on_memregion_iterate<Closure, in_gc_pause>(mr, cl);
-      return mr.end();
+  HeapWord* hum_tail_scan_end = mr.end();
+  if (has_humongous_tail()) {
+    if (mr.start() >= old_objects_start()) {
+      hum_tail_scan_end = oops_on_memregion_iterate<Closure, in_gc_pause>(mr, cl);
+      return MAX2(mr.end(), hum_tail_scan_end);
+    } else if (mr.end() > old_objects_start()) {
+      // The memory range crosses the old object and the tail area; scan both, starting with the tail
+      // range [old_objects_start(), mr.end()) for code ordering reasons. Then fall through to scan the
+      // humongous object part.
+      hum_tail_scan_end = oops_on_memregion_iterate<Closure, in_gc_pause>(MemRegion(old_objects_start(), mr.end()), cl);
+    }
   }
 
   // We have a well-formed humongous object at the start of sr.
@@ -324,7 +332,7 @@ HeapWord* G1HeapRegion::do_oops_on_memregion_in_humongous(MemRegion mr,
     // objects.  That should be rare, so not worth checking for;
     // instead let it fall out from the bounded iteration.
     obj->oop_iterate(cl, mr);
-    return mr.end();
+    return hum_tail_scan_end;
   } else {
     // If obj is not an objArray and mr contains the start of the
     // obj, then this could be an imprecise mark, and we need to
@@ -333,7 +341,7 @@ HeapWord* G1HeapRegion::do_oops_on_memregion_in_humongous(MemRegion mr,
     // We have scanned to the end of the object, but since there can be no objects
     // after this humongous object in the region, we can return the end of the
     // region if it is greater.
-    return MAX2(cast_from_oop<HeapWord*>(obj) + size, mr.end());
+    return MAX2(cast_from_oop<HeapWord*>(obj) + size, hum_tail_scan_end);
   }
 }
 

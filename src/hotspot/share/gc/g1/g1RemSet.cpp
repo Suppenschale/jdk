@@ -287,6 +287,11 @@ public:
     return (hr != nullptr && !hr->in_collection_set() && hr->is_old_or_humongous());
   }
 
+  bool will_be_scanned(HeapWord* value) const {
+    HeapWord* cur_scan_top = scan_top(G1CollectedHeap::heap()->addr_to_region(value));
+    return cur_scan_top != nullptr && value < cur_scan_top;
+  }
+
   size_t num_cards_in_dirty_regions() const {
     return _next_dirty_regions->size() * G1HeapRegion::CardsPerRegion;
   }
@@ -531,6 +536,10 @@ public:
   size_t chunks_claimed() const { return _chunks_claimed; }
   size_t heap_roots_found() const { return _heap_roots_found; }
 };
+
+bool G1RemSet::will_be_scanned(HeapWord* value) const {
+  return _scan_state->will_be_scanned(value);
+}
 
 void G1RemSet::scan_heap_roots(G1ParScanThreadState* pss,
                                uint worker_id,

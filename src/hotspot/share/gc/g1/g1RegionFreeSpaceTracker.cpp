@@ -7,6 +7,9 @@
 #include "utilities/hashTable.hpp"
 #include "utilities/resizableHashTable.hpp"
 
+static int filler_header_size() {
+  return MAX2((int)CollectedHeap::min_fill_size(), align_up(arrayOopDesc::header_size_in_bytes(), HeapWordSize) / HeapWordSize);
+}
 
 G1RegionFreeSpaceTracker::G1RegionFreeSpaceTracker(G1CollectedHeap* heap) :
     _g1h(heap),
@@ -15,8 +18,9 @@ G1RegionFreeSpaceTracker::G1RegionFreeSpaceTracker(G1CollectedHeap* heap) :
     _root_young(nullptr),
     _root_old(nullptr),
     _size(0),
-    _min_hole_size_young(0),
-    _min_hole_size_old(0)
+    _min_hole_size_young_in_words(0),
+    _min_hole_size_old_in_words(0),
+    _hit_young(0), _all_young(0), _hit_old(0), _all_old(0)
 {
     log_trace(gc_testing)("Init G1RegionFreeSpaceTracker");
 
@@ -24,6 +28,11 @@ G1RegionFreeSpaceTracker::G1RegionFreeSpaceTracker(G1CollectedHeap* heap) :
     log_trace(gc_testing)("Size of ListHole: %ld", sizeof(ListHole));
     log_trace(gc_testing)("Size of TreeHole: %ld", sizeof(TreeHole));
 
+
+
+    log_trace(gc_testing)("CollectedHeap::filler_array_min_size() = %ld", _g1h->filler_array_min_size());
+    log_trace(gc_testing)("CollectedHeap::min_dummy_object_size() = %ld", CollectedHeap::min_dummy_object_size());
+    log_trace(gc_testing)("CollectedHeap::min_fill_size()         = %ld", CollectedHeap::min_fill_size());
 }
 
 void G1RegionFreeSpaceTracker::initialize() {
@@ -43,13 +52,13 @@ void G1RegionFreeSpaceTracker::initialize() {
     if (use_tree()) {
         // Use tree structure
         size_t words_for_struct = (sizeof(TreeHole) + sizeof(HeapWord) - 1) / sizeof(HeapWord);
-        _min_hole_size_young = CollectedHeap::min_fill_size() + words_for_struct + 10; // arbitrary bonus offset
-        _min_hole_size_old   = CollectedHeap::min_fill_size() + words_for_struct + 10; // arbitrary bonus offset
+        _min_hole_size_young_in_words = filler_header_size() + words_for_struct;
+        _min_hole_size_old_in_words = G1CardTable::card_size_in_words(); // Must be at least a card because need card alignment.
     } else {
         // Use list structure
         size_t words_for_struct = (sizeof(ListHole) + sizeof(HeapWord) - 1) / sizeof(HeapWord);
-        _min_hole_size_young = CollectedHeap::min_fill_size() + words_for_struct + 10; // arbitrary bonus offset
-        _min_hole_size_old   = CollectedHeap::min_fill_size() + words_for_struct + 10; // arbitrary bonus offset
+        _min_hole_size_young_in_words = filler_header_size() + words_for_struct;
+        _min_hole_size_old_in_words = G1CardTable::card_size_in_words(); // Must be at least a card because need card alignment.
     }
 
 }
@@ -70,13 +79,37 @@ bool G1RegionFreeSpaceTracker::use_tree() const {
     return G1HoleDataStructure > 0;
 }
 
+
+bool G1RegionFreeSpaceTracker::hole_in_list(HeapWord** list, G1HeapRegion* region, HeapWord* word) {
+
+    HeapWord* curr = list[region->hrm_index()];
+
+    /*g_trace(gc_testing)("Check word in list: " PTR_FORMAT, p2i(word));
+
+    
+    parse_tree(_root_old);
+    parse_list(_holes_old);
+    if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");*/
+    while (curr != nullptr) {
+        //log_trace(gc_testing)("hole_in_list");
+        if (curr == word) return true;
+        curr = get_next(curr);
+    }
+    return false;
+}
+
+
 bool G1RegionFreeSpaceTracker::add_potential_survivor_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {
     
     /*bool created;
     size_t* count = _hole_statistics_young.put_if_absent(size_in_words, &created);
     (*count)++;*/
 
-    if (size_in_words < _min_hole_size_young) {
+    if (size_in_words < _min_hole_size_young_in_words) {
+        return false;
+    }
+
+    if (hole_in_list(_holes_young, region, word)) {
         return false;
     }
     
@@ -96,40 +129,78 @@ bool G1RegionFreeSpaceTracker::add_potential_humongous_hole(G1HeapRegion* region
     return add_potential_old_hole(region, word, size_in_words);
 }
 
-bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* word, size_t size_in_words) {       
+bool G1RegionFreeSpaceTracker::add_potential_old_hole(G1HeapRegion* region, HeapWord* start, size_t size_in_words) {
     if (region->has_pinned_objects()) { // Reject pinned regions: they may contain valid objects anywhere (actually it would be possible, but then would need to reject at allocation side. This is more complicated.)
         return false;
     }
-    if (size_in_words < _min_hole_size_old) {
+    if (size_in_words < _min_hole_size_old_in_words) {
         return false;
     }
 
-    add_hole_list(_holes_old, region, word, size_in_words);
+    HeapWord* end = start + size_in_words;
+
+    HeapWord* aligned_start = align_up(start, G1CardTable::card_size());
+    HeapWord* aligned_end = align_down(end, G1CardTable::card_size());
+
+    size_t start_fill = pointer_delta(aligned_start, start);
+    if (start_fill != 0) {
+        if (start_fill < CollectedHeap::min_fill_size()) {
+            start_fill += G1CardTable::card_size_in_words();
+            aligned_start += G1CardTable::card_size_in_words();
+        }
+    }
+    size_t end_fill = pointer_delta(end, aligned_end);
+    if (end_fill != 0) {
+        if (end_fill < CollectedHeap::min_fill_size()) {
+            end_fill += G1CardTable::card_size_in_words();
+            aligned_end -= G1CardTable::card_size_in_words();
+        }
+    }
+    if (aligned_start >= aligned_end) {
+        _g1h->fill_with_objects(start, size_in_words);
+        region->update_bot_for_block(start, start + size_in_words);
+        return false;
+    }
+
+    if (hole_in_list(_holes_old, region, aligned_start)) {
+        return false;
+    }
+
+    if (start_fill != 0) {
+        _g1h->fill_with_objects(start, start_fill);
+        region->update_bot_for_block(start, start + start_fill);
+    }
+    if (end_fill != 0) {
+        _g1h->fill_with_object(aligned_end, end_fill);
+        region->update_bot_for_block(aligned_end, aligned_end + end_fill);
+    }
+    size_t hole_size_in_words = pointer_delta(aligned_end, aligned_start);
+    _g1h->fill_with_objects(aligned_start, hole_size_in_words);
+    region->update_bot_for_block(aligned_start, aligned_end);
+
+    add_hole_list(_holes_old, region, aligned_start, hole_size_in_words);
     if (use_tree()) {
-        add_hole_tree(_root_old, word, size_in_words);
-    } 
+        add_hole_tree(_root_old, aligned_start, hole_size_in_words);
+    }
     return true;
 }
 
 
 void G1RegionFreeSpaceTracker::set_hole_list(HeapWord* word, size_t size, HeapWord* next) {
-    int header_size = CollectedHeap::min_fill_size();
-    *(ListHole*)(word + header_size) = ListHole {size, next};
+    *(ListHole*)(word + filler_header_size()) = ListHole {size, next};
 }
 
 ListHole* G1RegionFreeSpaceTracker::get_hole_list(HeapWord* word) const {
-    int header_size = CollectedHeap::min_fill_size();
-    return (ListHole*)(word + header_size);
+    return (ListHole*)(word + filler_header_size());
 }
 
-void G1RegionFreeSpaceTracker::set_hole_tree(HeapWord* word) {
-    int header_size = CollectedHeap::min_fill_size();
-    *(TreeHole*)(word + header_size) = TreeHole {0, nullptr, nullptr, nullptr, nullptr, true};
+void G1RegionFreeSpaceTracker::set_hole_tree(HeapWord* word, size_t size_in_words) {
+    HeapWord* next = get_next(word);
+    *(TreeHole*)(word + filler_header_size()) = TreeHole {size_in_words, next, nullptr, nullptr, nullptr, true};
 }
 
 TreeHole* G1RegionFreeSpaceTracker::get_hole_tree(HeapWord* word) const {
-    int header_size = CollectedHeap::min_fill_size();
-    return (TreeHole*)(word + header_size);
+    return (TreeHole*)(word + filler_header_size());
 }
 
 // size and next are aligned for ListHole and TreeHole
@@ -153,6 +224,7 @@ HeapWord* G1RegionFreeSpaceTracker::get_next(HeapWord* word) const {
 }
 
 void G1RegionFreeSpaceTracker::set_parent(HeapWord* word, HeapWord* parent) {
+    if (word == nullptr) return;
     TreeHole* hole = get_hole_tree(word);
     hole->parent = parent;
 }
@@ -163,6 +235,12 @@ HeapWord* G1RegionFreeSpaceTracker::get_parent(HeapWord* word) const {
 }
 
 void G1RegionFreeSpaceTracker::set_left(HeapWord* word, HeapWord* left) {
+    if (word == nullptr) return;
+
+    if ((uintptr_t)left % sizeof(HeapWord) != 0) {
+        log_error(gc_testing)("left : " PTR_FORMAT " not aligned?", p2i(left));
+    }
+
     TreeHole* hole = get_hole_tree(word);
     hole->left = left;
 }
@@ -173,6 +251,12 @@ HeapWord* G1RegionFreeSpaceTracker::get_left(HeapWord* word) const {
 }
 
 void G1RegionFreeSpaceTracker::set_right(HeapWord* word, HeapWord* right) {
+    if (word == nullptr) return;
+
+    if ((uintptr_t)right % sizeof(HeapWord) != 0) {
+        log_error(gc_testing)("right : " PTR_FORMAT " not aligned?", p2i(right));
+    }
+
     TreeHole* hole = get_hole_tree(word);
     hole->right = right;
 }
@@ -198,7 +282,6 @@ void G1RegionFreeSpaceTracker::set_red(HeapWord* word) {
 }
 
 bool G1RegionFreeSpaceTracker::is_red(HeapWord* word) const {
-    if (word == nullptr) return false;
     return get_color(word);
 }
 
@@ -207,7 +290,6 @@ void G1RegionFreeSpaceTracker::set_black(HeapWord* word) {
 }
 
 bool G1RegionFreeSpaceTracker::is_black(HeapWord* word) const {
-    if (word == nullptr) return false;
     return !get_color(word);
 }
 
@@ -217,254 +299,7 @@ void G1RegionFreeSpaceTracker::add_hole_list(HeapWord** list, G1HeapRegion* regi
     set_hole_list(word, size_in_words, next);
 }
 
-void G1RegionFreeSpaceTracker::add_hole_tree(HeapWord* &root, HeapWord* word, size_t size_in_words) {
-    
-    set_hole_tree(word);
 
-    if (root == nullptr) {
-        root = word;
-        set_parent(word, nullptr);
-        set_black(word);
-    } else {
-
-        HeapWord* curr = root;
-        HeapWord* prev = root;
-
-        while (curr != nullptr) {
-            // Follow left
-            if (size_in_words <= get_size(curr)) {
-
-                if (curr == word) {
-                    log_trace(gc_testing)("Hole already inserted");
-                    return;
-                } 
-
-                prev = curr;
-                curr = get_left(curr);
-            }
-            // Follow right
-            else {
-                prev = curr;
-                curr = get_right(curr);
-            }     
-        }
-
-        // Insert
-        set_parent(word, prev);
-        set_red(word);
-
-        if (size_in_words <= get_size(prev)) {
-            set_left(prev, word);
-        } else {
-            set_right(prev, word);
-        }
-    }
-
-    set_size(word, size_in_words);
-    set_left(word, nullptr);
-    set_right(word, nullptr);
-
-    // If parent is red, tree might need to be fixed
-    if (use_rbt() && is_red(get_parent(word))) {
-        rb_insert_fixup(root, word);
-    }
-}
-
-void G1RegionFreeSpaceTracker::transplant(HeapWord* &root, HeapWord* u, HeapWord* v) {
-    assert(u != nullptr, "u must not be null");
-
-    HeapWord* parent = get_parent(u);
-
-    if (parent == nullptr) {
-        root = v;
-    } else if (is_left(u)) {
-        set_left(parent, v);
-    } else {
-        set_right(parent, v);
-    }
-    if (v != nullptr) {
-        set_parent(v, parent);
-    }
-}
-
-bool G1RegionFreeSpaceTracker::is_left(HeapWord* word) const {
-    HeapWord* parent = get_parent(word);
-    if (parent != nullptr) {
-        return get_left(parent) == word;
-    }
-    return false;
-}
-
-bool G1RegionFreeSpaceTracker::is_right(HeapWord* word) const {
-    HeapWord* parent = get_parent(word);
-    if (parent != nullptr) {
-        return get_right(parent) == word;
-    }
-    return false;
-}
-
-void G1RegionFreeSpaceTracker::rb_insert_fixup(HeapWord* &root, HeapWord* word) {
-
-    if (root == nullptr || word == nullptr) return;
-
-    HeapWord* curr = word;
-
-    while (is_red(get_parent(curr))) {
-        
-        HeapWord* parent = get_parent(curr);
-        HeapWord* grandparent = get_parent(parent);
-
-        if (grandparent == nullptr) {
-            log_error(gc_testing)("grandparent is null in insert fixup");
-            break;
-        }
-
-        bool parent_is_left = (get_left(grandparent) == parent);
-        bool curr_is_left = (get_left(parent) == curr);
-        HeapWord* uncle = parent_is_left? get_right(grandparent) : get_left(grandparent);
-
-        // Case 1: Uncle is red
-        if (is_red(uncle)) {
-            //log_trace(gc_testing)("Case 1: Uncle is red");
-            set_black(parent);
-            set_black(uncle);
-            set_red(grandparent);
-        }
-        // Case 2: Uncle is black
-        else {
-            //log_trace(gc_testing)("Case 2: Uncle is black");
-            
-            // Left 
-            if (parent_is_left) {
-
-                // Right
-                if (!curr_is_left) {
-                    // Case 2a: Triangle (Left-Right)
-                    //log_trace(gc_testing)("Case 2a: Triangle (Left-Right)");
-                    curr = parent;
-                    left_rotate(root, curr);
-                    // After rotating we are in same case as:
-                }
-                // Case 2b: Line (Left-Left)
-                //log_trace(gc_testing)("Case 2b: Line (Left-Left)");
-
-                parent = get_parent(curr);
-                grandparent = get_parent(parent);
-
-                set_black(parent);
-                set_red(grandparent);
-
-                right_rotate(root, grandparent);
-            } 
-            // Right
-            else {
-
-                // Left
-                if (curr_is_left) {
-                    // Case 2c: Triangle (Right-Left)
-                    //log_trace(gc_testing)("Case 2c: Triangle (Right-Left)");
-                    curr = parent;
-                    right_rotate(root, curr);
-                    // After rotating we are in same case as:
-                }
-                // Case 2d: Line. Right-Right
-                //log_trace(gc_testing)("Case 2d: Line (Right-Right)");
-                
-                parent = get_parent(curr);
-                grandparent = get_parent(parent);
-
-                set_black(parent);
-                set_red(grandparent);
-
-                left_rotate(root, grandparent);
-            }
-
-        }
-        
-        curr = grandparent;
-    }
-
-    set_black(root);
-}
-
-void G1RegionFreeSpaceTracker::rb_remove_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent) {
-
-    if (root == nullptr) return;
-
-    HeapWord* w = nullptr;
-
-    while (x != root && is_black(x)) {
-
-        if (x_parent == nullptr && x != root) {
-            log_error(gc_testing)("x_parent is null in remove fixup");
-            break;
-        }
-
-        if (x == get_left(x_parent)) {
-
-            w = get_right(x_parent);
-
-            if (is_red(w)) {
-                set_black(w);
-                set_red(x_parent);
-                left_rotate(root, x_parent);
-                w = get_right(x_parent);
-            }
-
-            if (is_black(get_left(w)) && is_black(get_right(w))) {
-                set_red(w);
-                x = x_parent;
-                x_parent  = get_parent(x_parent);
-            } else {
-
-                if (is_black(get_right(w))) {
-                    set_black(get_left(w));
-                    set_red(w);
-                    right_rotate(root, w);
-                    w = get_right(x_parent);
-                }
-
-                set_color(w, get_color(x_parent));
-                set_black(x_parent);
-                set_black(get_right(w));
-                left_rotate(root, x_parent);
-                x = root;
-            }
-        } else {
-
-            w = get_left(x_parent);
-
-            if (is_red(w)) {
-                set_black(w);
-                set_red(x_parent);
-                right_rotate(root, x_parent);
-                w = get_left(x_parent);
-            }
-
-            if (is_black(get_left(w)) && is_black(get_right(w))) {
-                set_red(w);
-                x = x_parent;
-                x_parent  = get_parent(x_parent);
-            } else {
-
-                if (is_black(get_left(w))) {
-                    set_black(get_right(w));
-                    set_red(w);
-                    left_rotate(root, w);
-                    w = get_left(x_parent);
-                }
-
-                set_color(w, get_color(x_parent));
-                set_black(x_parent);
-                set_black(get_left(w));
-                right_rotate(root, x_parent);
-                x = root;
-            }
-        }
-    }
-
-    set_black(x);
-}
 
 /*
           z            z          z             z
@@ -477,19 +312,14 @@ void G1RegionFreeSpaceTracker::rb_remove_fixup(HeapWord* &root, HeapWord* x, Hea
 
 */
 void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
-
     if (x == nullptr) {
-        log_error(gc_testing)("left_rotate called with null x");
         return;
     }
 
     HeapWord* y = get_right(x);
 
     if (y == nullptr) {
-        log_error(gc_testing)("left_rotate called on node without right child");
-        log_error(gc_testing)("x=" PTR_FORMAT ", size=%ld, parent=" PTR_FORMAT, 
-                                p2i(x), get_size(x), p2i(get_parent(x)));
-    return;
+        return;
     }
 
     HeapWord* z = get_parent(x);
@@ -499,9 +329,7 @@ void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
     if (a != nullptr) {
         set_parent(a, x);
     }
-
     set_parent(y, z);
-
     if (x == root) {
         root = y;
     } else if (x == get_left(z)) {
@@ -509,7 +337,6 @@ void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
     } else {
         set_right(z, y);
     }
-
     set_left(y, x);
     set_parent(x, y);
 }
@@ -525,18 +352,13 @@ void G1RegionFreeSpaceTracker::left_rotate(HeapWord* &root, HeapWord* x) {
 
 */
 void G1RegionFreeSpaceTracker::right_rotate(HeapWord* &root, HeapWord* x) {
-
     if (x == nullptr) {
-        log_error(gc_testing)("right_rotate called with null x");
         return;
     }
 
     HeapWord* y = get_left(x);
 
     if (y == nullptr) {
-        log_error(gc_testing)("right_rotate called on node without left child");
-        log_error(gc_testing)("x=" PTR_FORMAT ", size=%ld, parent=" PTR_FORMAT, 
-                                p2i(x), get_size(x), p2i(get_parent(x)));
         return;
     }
 
@@ -547,9 +369,7 @@ void G1RegionFreeSpaceTracker::right_rotate(HeapWord* &root, HeapWord* x) {
     if (b != nullptr) {
         set_parent(b, x);
     }
-
     set_parent(y, z);
-
     if (x == root) {
         root = y;
     } else if (x == get_left(z)) {
@@ -557,96 +377,295 @@ void G1RegionFreeSpaceTracker::right_rotate(HeapWord* &root, HeapWord* x) {
     } else {
         set_right(z, y);
     }
-
     set_right(y, x);
     set_parent(x, y);
 }
 
+void G1RegionFreeSpaceTracker::transplant(HeapWord* &root, HeapWord* u, HeapWord* v) {
+
+    HeapWord* u_parent = get_parent(u);
+    if (u == root) {
+        root = v;
+    } else if (u == get_left(u_parent)) {
+        set_left(u_parent, v);
+    } else {
+        set_right(u_parent, v);
+    }
+    set_parent(v, u_parent);
+}
+
+void G1RegionFreeSpaceTracker::add_hole_tree(HeapWord* &root, HeapWord* z, size_t size_in_words) {
+    
+    set_hole_tree(z, size_in_words);
+
+    HeapWord* y = nullptr;
+    HeapWord* x = root;
+
+    while (x != nullptr) {
+        //log_trace(gc_testing)("add_hole_tree");
+        y = x;
+        if (get_size(z) <= get_size(x)) {
+            x = get_left(x);
+        } else {
+            x = get_right(x);
+        }     
+    }
+    set_parent(z, y);
+    if (y == nullptr) {
+        root = z;
+    } else if (get_size(z) <= get_size(y)){
+        set_left(y, z);
+    } else {
+        set_right(y, z);
+    }
+    set_left(z, nullptr);
+    set_right(z, nullptr);
+    set_red(z);
+
+    if (use_rbt()) {
+        /*
+        dump_tree_node(z);
+        log_trace(gc_testing)("Before insert fixup");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");*/
+        rb_insert_fixup(root, z);
+        /*log_trace(gc_testing)("After insert fixup");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");*/
+    }
+    /*if (use_rbt() && !verify_tree(root)) {
+        log_error(gc_testing)("Tree is not valid after insert!");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");
+    }*/
+}
+
+
+
+void G1RegionFreeSpaceTracker::rb_insert_fixup(HeapWord* &root, HeapWord* z) {
+
+    int count = 0;
+
+    while (is_red(get_parent(z))) {
+        log_trace(gc_testing)("rb_insert_fixup (%d)", count);
+        count++;
+        if (100 < count) {
+            ShouldNotReachHere();
+        }
+        
+        
+        HeapWord* parent = get_parent(z);
+        HeapWord* grandparent = get_parent(parent);
+
+        if (parent == get_left(grandparent)) {
+            HeapWord* y = get_right(grandparent);
+            if (is_red(y)) {
+                set_black(parent);
+                set_black(y);
+                set_red(grandparent);
+                z = grandparent;
+            } else {
+                if (z == get_right(parent)) {
+                    z = parent;
+                    left_rotate(root, z);
+                    parent = get_parent(z);
+                    grandparent = get_parent(parent);
+                }
+                set_black(parent);
+                set_red(grandparent);
+                right_rotate(root, grandparent);
+            }
+        } else {
+            HeapWord* y = get_left(grandparent);
+            if (is_red(y)) {
+                set_black(parent);
+                set_black(y);
+                set_red(grandparent);
+                z = grandparent;
+            } else {
+                if (z == get_left(parent)) {
+                    z = parent;
+                    right_rotate(root, z);
+                    parent = get_parent(z);
+                    grandparent = get_parent(parent);
+                }
+                set_black(parent);
+                set_red(grandparent);
+                left_rotate(root, grandparent);
+            }
+        }
+    }
+    set_black(root);
+}
+
 HeapWord* G1RegionFreeSpaceTracker::remove_hole_list(HeapWord** list, G1HeapRegion* region, HeapWord* remove) {
 
-    HeapWord* start = list[region->hrm_index()];
-    HeapWord* curr = start;
-    HeapWord* prev = start;
+    HeapWord*& head = list[region->hrm_index()];
+
+    HeapWord* curr = head;
+    HeapWord* prev = nullptr;
 
     while (curr != nullptr) {
-        if (curr == remove) {
-            set_next(prev, get_next(curr));
-            set_next(curr, nullptr);
+        if (curr == remove) {  
+            HeapWord* next = get_next(curr);
 
-            if (curr == start) {
-                list[region->hrm_index()] = get_next(curr);
+            if (prev == nullptr) {
+                head = next;
+            } else {
+                set_next(prev, next);
             }
-
-            break;
+            set_next(curr, nullptr);
+            return curr;
         }
         prev = curr;
         curr = get_next(curr);
     }
-
-    return curr;
+    return nullptr;
 }
 
-HeapWord* G1RegionFreeSpaceTracker::remove_hole_tree(HeapWord* &root, HeapWord* remove) {
+HeapWord* G1RegionFreeSpaceTracker::remove_hole_tree(HeapWord* &root, HeapWord* z) {
 
-    if (remove == nullptr) {
-        return nullptr;
+    HeapWord* y = z;
+    HeapWord* x = nullptr;
+    HeapWord* x_parent = nullptr;
+    bool y_color = get_color(y);
+
+    if (get_left(z) == nullptr) {
+        x = get_right(z);
+        x_parent = get_parent(z);
+        transplant(root, z, get_right(z));
+    } else if (get_right(z) == nullptr) {
+        x = get_left(z);
+        x_parent = get_parent(z);
+        transplant(root, z, get_left(z));
+    } else {
+        y = tree_minimum(get_right(z));
+        y_color = get_color(y);
+        x = get_right(y);
+        if (get_parent(y) == z) {
+            x_parent = y;
+            set_parent(x, y);
+        } else {
+            x_parent = get_parent(y);
+            transplant(root, y, get_right(y));
+            set_right(y, get_right(z));
+            set_parent(get_right(y), y);
+        } 
+        transplant(root, z, y);
+        set_left(y, get_left(z));
+        set_parent(get_left(y), y);
+        set_color(y, get_color(z));
     }
 
-    // Remove hole with standard BST 
-     HeapWord* replace = nullptr;
-     HeapWord* replace_parent = get_parent(remove);
-     bool original_color = get_color(remove);
+    if (use_rbt() && !y_color) {
+        /*log_trace(gc_testing)("Before delete fixup");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");*/
+        rb_delete_fixup(root, x, x_parent);
+        /*log_trace(gc_testing)("After delete fixup");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");*/
+    }
+    /*if (use_rbt() && !verify_tree(root)) {
+        log_error(gc_testing)("Tree is not valid after remove!");
+        parse_tree(root);
+        parse_list(_holes_old);
+        if (!check_synchronization(_root_old, _holes_old)) log_error(gc_testing)("Lists and tree are asynchronized");
+    }*/
 
-    // No left child (handles also no children)
-    if (get_left(remove) == nullptr) {
-        replace = get_right(remove);
-        transplant(root, remove, replace);
-    } 
-    // No right child
-    else if (get_right(remove) == nullptr) {
-        replace = get_left(remove);
-        transplant(root, remove, replace);
-    } 
-    // 2 children
-    else {
-        HeapWord* successor = get_right(remove);
+    return z;
+}
 
-        while (get_left(successor) != nullptr) {
-            successor = get_left(successor);
+
+
+void G1RegionFreeSpaceTracker::rb_delete_fixup(HeapWord* &root, HeapWord* x, HeapWord* x_parent) {
+
+    int count = 0;
+
+    while (x != root && is_black(x)) {
+        //log_trace(gc_testing)("rb_delete_fixup");
+        log_trace(gc_testing)("rb_delete_fixup (%d)", count);
+        count++;
+        if (100 < count) {
+            ShouldNotReachHere();
         }
 
-        original_color = get_color(successor);
-        replace = get_right(successor);
-
-        if (get_parent(successor) != remove) {
-            transplant(root, successor, get_right(successor));
-            set_right(successor, get_right(remove));
-            set_parent(get_right(remove), successor);
-            replace_parent = get_parent(successor);
+        if (x == get_left(x_parent)) {
+            HeapWord* w = get_right(x_parent);
+            if (is_red(w)) {
+                set_black(w);
+                set_red(x_parent);
+                left_rotate(root, x_parent);
+                w = get_right(x_parent);
+            }
+            if (is_black(get_left(w)) && is_black(get_right(w))) {
+                set_red(w);
+                x = x_parent;
+                x_parent = get_parent(x);
+            } else {
+                if (is_black(get_right(w))) {
+                    set_black(get_left(w));
+                    set_red(w);
+                    right_rotate(root, w);
+                    w = get_right(x_parent);
+                }
+                set_color(w, get_color(x_parent));
+                set_black(x_parent);
+                set_black(get_right(w));
+                left_rotate(root, x_parent);
+                x = root;
+                x_parent = nullptr;
+            }
         } else {
-            replace_parent = successor;
-        } 
-
-        transplant(root, remove, successor);
-        set_left(successor, get_left(remove));
-        set_parent(get_left(remove), successor);
-        set_color(successor, get_color(remove));
+            HeapWord* w = get_left(x_parent);
+            if (is_red(w)) {
+                set_black(w);
+                set_red(x_parent);
+                right_rotate(root, x_parent);
+                w = get_left(x_parent);
+            }
+            if (is_black(get_left(w)) && is_black(get_right(w))) {
+                set_red(w);
+                x = x_parent;
+                x_parent = get_parent(x);
+            } else {
+                if (is_black(get_left(w))) {
+                    set_black(get_right(w));
+                    set_red(w);
+                    left_rotate(root, w);
+                    w = get_left(x_parent);
+                }
+                set_color(w, get_color(x_parent));
+                set_black(x_parent);
+                set_black(get_left(w));
+                right_rotate(root, x_parent);
+                x = root;
+                x_parent = nullptr;
+            }
+        }
     }
-
-    // Fix RB properties if original color was black
-    if (use_rbt() && !original_color) {
-        rb_remove_fixup(root, replace, replace_parent);
-    }
-
-    return remove;
+    set_black(x);
 }
 
+HeapWord* G1RegionFreeSpaceTracker::tree_minimum(HeapWord* x) {
+    while (get_left(x) != nullptr) {
+        //log_trace(gc_testing)("tree_minimum");
+        x = get_left(x);
+    }
+    return x;
+}
 
 
 HeapWord* G1RegionFreeSpaceTracker::find_exact_hole(HeapWord* &root, size_t size) const {
     HeapWord* curr = root;
 
     while (curr != nullptr) {
+        //log_trace(gc_testing)("find_exact_hole");
         if (get_size(curr) == size) return curr;
 
         if (size <= get_size(curr)) curr = get_left(curr);
@@ -655,7 +674,28 @@ HeapWord* G1RegionFreeSpaceTracker::find_exact_hole(HeapWord* &root, size_t size
     return nullptr;
 }
 
-HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, size_t min_size) const {
+static bool is_eligible_region(uint region_index) {
+    G1CollectedHeap* g1h = G1CollectedHeap::heap();
+    G1HeapRegion* r = g1h->region_at(region_index);
+    if (r->has_pinned_objects()) { // Do not allow allocation into pinned regions. They may still be in use.
+        return false;
+    }
+    // Region attributes for former survivor regions are already marked as in collection set, so skip the next check
+    // when outside safepoint (= mutator allocation).
+    if (!SafepointSynchronize::is_at_safepoint()) {
+      return true;
+    }
+    G1HeapRegionAttr attr = g1h->region_attr(region_index);
+    if (attr.is_in_cset() || attr.is_optional()) {
+        return false;
+    }
+    return true;
+}
+
+HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, size_t min_size, bool* holes_exhausted) const {
+
+    size_t num_null = 0;
+    *holes_exhausted = false;
 
     uint loop_break = 0;
     for (uint i = 0; i < _size; i++) {
@@ -663,18 +703,16 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
         HeapWord* curr = list[i]; 
 
         if (curr == nullptr) {
+            num_null++;
             continue;
         }
-        G1HeapRegion* r = _g1h->heap_region_containing(curr);
-        // Do not allow allocation into pinned regions.
-        // Also continue if region is part of collection set (and not young) 
-        bool check = r->has_pinned_objects() || (r->in_collection_set() && !r->is_young());
-        if (r->has_pinned_objects()) { 
+        if (!is_eligible_region(_g1h->addr_to_region(curr))) {
             continue;
         }
 
         loop_break = 0;
         while (curr != nullptr && loop_break < 100) {
+            //log_trace(gc_testing)("find_first_fitting_hole");
 
             size_t hole_size = get_size(curr);
 
@@ -687,6 +725,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_first_fitting_hole(HeapWord** list, siz
         }
     }
 
+    *holes_exhausted = num_null == _size;
     return nullptr;
 }
 
@@ -697,6 +736,7 @@ HeapWord* G1RegionFreeSpaceTracker::find_best_fitting_hole(HeapWord* &root, size
     HeapWord* best_fitting_hole = nullptr;
     uint depth = 0;
     while (curr != nullptr) {
+        //log_trace(gc_testing)("find_best_fitting_hole");
 
         size_t hole_size = get_size(curr);
         
@@ -739,14 +779,16 @@ bool G1RegionFreeSpaceTracker::is_splittable(size_t min_size, size_t hole_size) 
 HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
                                               size_t desired_word_size,
                                               size_t* actual_word_size,
-                                              bool young_gen) {
+                                              bool young_gen,
+                                              size_t* used_change,
+                                              bool* holes_exhausted) {
 
     if (young_gen) {
-        all_young++;
-        hit_young++;
+        _all_young++;
+        _hit_young++;
     } else {
-        all_old++;
-        hit_old++;
+        _all_old++;
+        _hit_old++;
     }
 
     if (use_tree()) {
@@ -754,32 +796,32 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
         HeapWord* hole = find_best_fitting_hole(young_gen? _root_young : _root_old, desired_word_size);
 
         if (hole != nullptr) {
-            return split_hole(hole, desired_word_size, actual_word_size, young_gen);
+            return split_hole(hole, desired_word_size, actual_word_size, young_gen, used_change);
         }
 
         hole = find_best_fitting_hole(young_gen? _root_young : _root_old, min_word_size);
 
         if (hole != nullptr) {
-            return split_hole(hole, min_word_size, actual_word_size, young_gen);
+            return split_hole(hole, min_word_size, actual_word_size, young_gen, used_change);
         }
 
     } else {
         HeapWord** root = young_gen ? _holes_young : _holes_old;
-        HeapWord* hole = find_first_fitting_hole(root, desired_word_size);
+        HeapWord* hole = find_first_fitting_hole(root, desired_word_size, holes_exhausted);
         if (hole != nullptr) {
-            return split_hole(hole, desired_word_size, actual_word_size, young_gen);
+            return split_hole(hole, desired_word_size, actual_word_size, young_gen, used_change);
         }
 
-        hole = find_first_fitting_hole(root, min_word_size);
+        hole = find_first_fitting_hole(root, min_word_size, holes_exhausted);
         if (hole != nullptr) {
-            return split_hole(hole, min_word_size, actual_word_size, young_gen);
+            return split_hole(hole, min_word_size, actual_word_size, young_gen, used_change);
         }
     }
 
     if (young_gen) {
-        hit_young--;
+        _hit_young--;
     } else {
-        hit_old--;
+        _hit_old--;
     }
     return nullptr;
 }
@@ -787,20 +829,58 @@ HeapWord* G1RegionFreeSpaceTracker::find_hole(size_t min_word_size,
 
 HeapWord* G1RegionFreeSpaceTracker::find_young_hole(size_t min_word_size,
                                                     size_t desired_word_size,
-                                                    size_t* actual_word_size) {
+                                                    size_t* actual_word_size,
+                                                    size_t* used_change) {
     assert(!SafepointSynchronize::is_at_safepoint(), "do not reuse survivor holes at safepoint");
-    return find_hole(min_word_size, desired_word_size, actual_word_size, true);
+    bool dummy;
+    return find_hole(min_word_size, desired_word_size, actual_word_size, true, used_change, &dummy);
 }
 
 HeapWord* G1RegionFreeSpaceTracker::find_old_hole(size_t min_word_size,
                                                   size_t desired_word_size,
-                                                  size_t* actual_word_size) {
+                                                  size_t* actual_word_size,
+                                                  size_t* used_change,
+                                                  bool* holes_exhausted) {
     assert(SafepointSynchronize::is_at_safepoint(), "do not reuse old holes outside safepoint");
-    return find_hole(min_word_size, desired_word_size, actual_word_size, false);
+    assert(min_word_size <= desired_word_size, "must be");
+
+    size_t aligned_min_word_size = align_up(min_word_size, G1CardTable::card_size_in_words());
+
+    size_t min_word_size_gap = aligned_min_word_size - min_word_size;
+    guarantee(CollectedHeap::min_fill_size() == 2, "must be");
+    if (min_word_size_gap == 1 && min_word_size == desired_word_size) { // Can't fill one-word sized gap and we can't scale back desired_size and meeting desired_size >= min_word_size
+        aligned_min_word_size += G1CardTable::card_size_in_words();
+    }
+
+    // Desired might be smaller now as we increased the min word size.
+    size_t aligned_desired_word_size = align_up(desired_word_size, G1CardTable::card_size_in_words());
+
+    // Min_word_size might be increased by a card, while desired not. Synchronize.
+    aligned_desired_word_size = MAX2(aligned_min_word_size, aligned_desired_word_size);
+
+    HeapWord* result = find_hole(aligned_min_word_size, aligned_desired_word_size, actual_word_size, false, used_change, holes_exhausted);
+    if (result != nullptr) {
+      // G1 does not support blocks that are larger than desired word size. Cut them.
+      if (*actual_word_size > desired_word_size) {
+        // Fill up.
+        size_t net_word_size = desired_word_size;
+        size_t filler_word_size = *actual_word_size - desired_word_size;
+        if (filler_word_size == 1) {
+            filler_word_size = CollectedHeap::min_fill_size();
+            net_word_size--;
+        }
+        assert(net_word_size <= desired_word_size, "net too large: net %zu min %zu desired %zu actual %zu", net_word_size, min_word_size, desired_word_size, *actual_word_size);
+        assert(net_word_size >= min_word_size,  "min too small: net %zu min %zu desired %zu actual %zu", net_word_size, min_word_size, desired_word_size, *actual_word_size);
+
+        _g1h->fill_with_objects(result + net_word_size, filler_word_size);
+        *actual_word_size = net_word_size;
+      }
+    }
+
+    return result;
 }
 
-HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen) {
-
+HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size, size_t* actual_word_size, bool young_gen, size_t* used_change) {
     G1HeapRegion* region = _g1h->heap_region_containing(hole);
 
     remove_hole_list(young_gen? _holes_young : _holes_old, region, hole);
@@ -816,9 +896,13 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
     region->fill_with_dummy_object(hole, want_to_allocate, false /* zap */, true /* force */);
 
     // If the hole is a gap between top and end, then move the top
-    if (region->top() == hole) {
+    if (hole == region->top()) {
         region->set_top(region->top() + want_to_allocate);
-    }         
+        *used_change += want_to_allocate;
+    } else {
+        // indicate that we allocated below top().
+        *used_change = 0;
+    }       
     // If not, the hole is on the left-hand side of top.
     // Therefore, if there is any remaining rest, it must be filled
     // (guaranteed to be fillable during the selection process)
@@ -831,7 +915,7 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
         } else {
             add_potential_old_hole(region, dummy, remaining);
         }            
-    }
+    } 
 
     *actual_word_size = want_to_allocate;   
     
@@ -843,13 +927,11 @@ HeapWord* G1RegionFreeSpaceTracker::split_hole(HeapWord* hole, size_t word_size,
       if (_g1h->collector_state()->in_concurrent_start_gc()) {
         cm->add_root_region_range(mr);
       }
-      if (cm->cm_thread()->in_progress()) {
-        cm->add_to_allocation_tree(mr);  
-      }
     }
 
     
-
+    //log_trace(gc_testing)("REMOVED : " PTR_FORMAT, p2i(hole));
+    //return nullptr;
     return hole;
 }
 
@@ -872,21 +954,48 @@ void G1RegionFreeSpaceTracker::clean_up_old_holes() {
     } 
 }
 
-void G1RegionFreeSpaceTracker::remove_region(G1HeapRegion* region) {
-    if (use_tree()) {
-        
-        bool young_gen = region->is_young();
-
-        HeapWord* word = young_gen? _holes_young[region->hrm_index()] : _holes_old[region->hrm_index()];
-
-        while (word != nullptr) {
-            remove_hole_tree(young_gen? _root_young : _root_old, word);
-            word = get_next(word);
+void G1RegionFreeSpaceTracker::remove_region(G1HeapRegion* region) {    
+    {
+        MutexLocker x(G1YoungDataStructure_lock, Mutex::_no_safepoint_check_flag);
+        if (use_tree()) {            
+            HeapWord* word = _holes_young[region->hrm_index()];
+            while (word != nullptr) {
+                //log_trace(gc_testing)("remove_region_young");
+                remove_hole_tree(_root_young, word);
+                word = get_next(word);
+            }
         }
+        _holes_young[region->hrm_index()] = nullptr;
+    }
+    {
+        MutexLocker x(G1OldDataStructure_lock, Mutex::_no_safepoint_check_flag);
+        if (use_tree()) {            
+            HeapWord* word = _holes_old[region->hrm_index()];
+            while (word != nullptr) {
+                //log_trace(gc_testing)("remove_region_old");
+                remove_hole_tree(_root_old, word);
+                word = get_next(word);
+            }
+        }
+        _holes_old[region->hrm_index()] = nullptr;
+    }
+}
 
-    } 
-    _holes_young[region->hrm_index()] = nullptr;
-    _holes_old[region->hrm_index()] = nullptr;
+void G1RegionFreeSpaceTracker::clean_cards_for_old_holes(uint index) {
+  HeapWord* cur = _holes_old[index];
+  if (cur == nullptr) { // If there is no hole list, nothing to do.
+    return;
+  }
+
+  if (!is_eligible_region(index)) { // Nothing to do for regions not allocating into.
+    return;
+  }
+  G1CardTable* table = _g1h->card_table();
+  while (cur != nullptr) {
+    size_t hole_size_in_words = get_size(cur);
+    table->clear_MemRegion(MemRegion(cur, hole_size_in_words));
+    cur = get_next(cur);
+  }
 }
 
 
@@ -983,11 +1092,349 @@ void G1RegionFreeSpaceTracker::print_statistics() const {
         log_trace(gc_testing)("Collect:old_object_desired;%ld;%ld;%ld", key, value, G1HeapRegion::GrainBytes);
     });*/
 
-    if (all_young > 0) {
-        log_trace(gc_testing)("Hit Ratio Young: %.4f Percent(%ld / %ld)", ((double)hit_young) / all_young * 100.0f, hit_young, all_young);
+    if (_all_young > 0) {
+        log_trace(gc_testing)("Hit Ratio Young: %.4f Percent(%ld / %ld)", ((double)_hit_young) / _all_young * 100.0f, _hit_young, _all_young);
     }
-    if (all_old > 0) {
-        log_trace(gc_testing)("Hit Ratio Old: %.4f Percent (%ld / %ld)", ((double)hit_old) / all_old * 100.0f, hit_old, all_old);
+    if (_all_old > 0) {
+        log_trace(gc_testing)("Hit Ratio Old: %.4f Percent (%ld / %ld)", ((double)_hit_old) / _all_old * 100.0f, _hit_old, _all_old);
     }
 
+}
+
+
+void G1RegionFreeSpaceTracker::parse_list(HeapWord** list) {
+    tty->print("digraph AllLists {\n");
+
+    int count = 0;
+
+    for (uint i = 0; i < _size; i++) {
+
+        HeapWord* curr = list[i];
+
+        while (curr != nullptr) {
+            count++;
+            tty->print(" N" PTR_FORMAT " [label=\" " PTR_FORMAT "\n(%ld)\nRegion :%d \"]\n", p2i(curr), p2i(curr), get_size(curr), i);
+            if (get_next(curr) != nullptr) {
+                tty->print("N" PTR_FORMAT " -> N" PTR_FORMAT "\n", p2i(curr), p2i(get_next(curr)));
+            }
+            curr = get_next(curr);
+        }
+
+    }
+
+    tty->print("}\n");
+    tty->print("Nodes in list : %d\n", count);
+}
+
+
+void G1RegionFreeSpaceTracker::parse_tree(HeapWord* root) {
+    if (root == nullptr) {
+        tty->print("Root is null\n");
+        return;
+    }
+    if (root == _root_young) {
+        return;
+    }
+    tty->print("digraph RBT {\n");
+    int global_id = 0;
+    visit_node(root, &global_id);
+    tty->print("}\n");
+
+}
+
+
+bool G1RegionFreeSpaceTracker::check_synchronization(HeapWord* root, HeapWord** list) {
+
+    bool check_lists_contains_tree = true;
+    check_node(list, root, &check_lists_contains_tree);
+
+    if (!check_lists_contains_tree) {
+        return false;
+    }    
+
+    for (uint i = 0; i < _size; i++) {
+        HeapWord* curr = list[i];
+        while (curr != nullptr) {
+
+            bool check_tree_contains_lists = false;
+            contains_node(root, curr, &check_tree_contains_lists);
+
+            if (!check_tree_contains_lists) {
+                log_error(gc_testing)("Node " PTR_FORMAT " in lists but not in tree", p2i(curr));
+                return false;
+            }
+
+            curr = get_next(curr);
+        }
+    } 
+    return true;
+}
+
+void G1RegionFreeSpaceTracker::contains_node(HeapWord* tree_node, HeapWord* node, bool* check) {
+
+    if (tree_node == nullptr || *check) return;
+
+    *check = (tree_node == node);
+    contains_node(get_left(tree_node), node, check);
+    contains_node(get_right(tree_node), node, check);
+}
+
+void G1RegionFreeSpaceTracker::check_node(HeapWord** list, HeapWord* node, bool* check) {
+
+    if (node == nullptr || !*check) return;
+
+    *check = hole_in_lists(list, node);
+
+    if (!*check) {
+        log_error(gc_testing)("Node " PTR_FORMAT " in tree but not in lists", p2i(node));
+    }
+
+    check_node(list, get_left(node), check);
+    check_node(list, get_right(node), check);
+}
+
+bool G1RegionFreeSpaceTracker::hole_in_lists(HeapWord** list, HeapWord* node) {
+
+    for (uint i = 0; i < _size; i++) {
+        HeapWord* curr = list[i];
+        while (curr != nullptr) {
+            if (curr == node) return true;
+            curr = get_next(curr);
+        }
+    }
+    return false;
+}
+
+
+void G1RegionFreeSpaceTracker::visit_node(HeapWord* node, int* global_id) {
+    int id = *global_id;
+    HeapWord* left = get_left(node);
+    HeapWord* right = get_right(node);
+
+    TreeHole* h = get_hole_tree(node);    
+    G1HeapRegion* r = _g1h->heap_region_containing(node);
+
+    tty->print_cr("word       = " PTR_FORMAT, p2i(node));
+    tty->print_cr("tree       = " PTR_FORMAT, p2i(h));
+    tty->print_cr("size       = %ld"  , h->size);
+    tty->print_cr("next       = " PTR_FORMAT, p2i(h->next));
+    tty->print_cr("parent     = " PTR_FORMAT, p2i(h->parent));
+    tty->print_cr("left       = " PTR_FORMAT, p2i(h->left));
+    tty->print_cr("right      = " PTR_FORMAT, p2i(h->right));
+    tty->print_cr("red        = %d", h->red);
+    tty->print_cr("pinned     = %d", r->has_pinned_objects());
+
+    uint8_t* bytes = reinterpret_cast<uint8_t*>(get_hole_tree(node));
+
+    tty->print_cr("Raw TreeHole bytes at " PTR_FORMAT ":", p2i(bytes));
+
+    for (size_t i = 0; i < sizeof(TreeHole); i++) {
+        if (i % 8 == 0) {
+            tty->print("%3zu: ", i);
+        }
+
+        tty->print("%02x ", bytes[i]);
+
+        if (i % 8 == 7 || i == sizeof(TreeHole) - 1) {
+            tty->cr();
+        }
+    }
+
+
+    tty->print(" N" PTR_FORMAT "[label=\"" PTR_FORMAT "\n(%ld)\",color=\"%s\"]\n", p2i(node), p2i(node), get_size(node), (is_red(node) ? "red" : "black"));
+    (*global_id)++;
+    if (left != nullptr) {
+        tty->print(" N" PTR_FORMAT " -> N" PTR_FORMAT "\n", p2i(node), p2i(get_left(node)));
+        visit_node(left, global_id);
+    } else {
+        tty->print(" N" PTR_FORMAT " -> N%d\n", p2i(node), *global_id);
+        tty->print(" N%d [labl=NIL,color=\"black\"]\n", *global_id);
+    }
+    (*global_id)++;
+    if (right != nullptr) {
+        tty->print(" N" PTR_FORMAT " -> N" PTR_FORMAT "\n", p2i(node), p2i(get_right(node)));
+        visit_node(right, global_id);
+    } else {
+        tty->print(" N" PTR_FORMAT " -> N%d\n", p2i(node), *global_id);
+        tty->print(" N%d [labl=NIL,color=\"black\"]\n", *global_id);
+    }
+
+}
+
+
+
+bool G1RegionFreeSpaceTracker::verify_tree(HeapWord* &root) const {
+
+    // Empty tree is valid.
+    if (root == nullptr) {
+        return true;
+    }
+
+    // Property 2:
+    // The root must be black.
+    if (is_red(root)) {
+        log_error(gc_testing)("RB violation: root is red");
+        return false;
+    }
+
+    int black_height = 0;
+
+    if (!verify_node(
+            root,
+            nullptr,
+            nullptr,
+            nullptr,
+            black_height)) {
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool G1RegionFreeSpaceTracker::verify_node(
+        HeapWord* node,
+        HeapWord* expected_parent,
+        HeapWord* min_node,
+        HeapWord* max_node,
+        int& black_height) const {
+
+    /*
+     * nullptr represents a NIL leaf.
+     *
+     * NIL leaves are black and contribute one to the
+     * black height.
+     */
+    if (node == nullptr) {
+        black_height = 1;
+        return true;
+    }
+
+    size_t size = get_size(node);
+
+
+    /* ============================================================
+     * Check parent pointer
+     * ============================================================ */
+
+    if (get_parent(node) != expected_parent) {
+        log_error(gc_testing)("RB violation: wrong parent pointer at node %ld", size);
+        return false;
+    }
+
+
+    /* ============================================================
+     * Check BST property
+     *
+     * Everything in the left subtree must be:
+     *
+     *      < node
+     *
+     * Everything in the right subtree must be:
+     *
+     *      > node
+     * ============================================================ */
+
+    if (min_node != nullptr &&
+        size < get_size(min_node)) {
+        log_error(gc_testing)("BST violation: node %ld is not greater than lower bound %ld", size, get_size(min_node));
+        return false;
+    }
+
+    if (max_node != nullptr &&
+        size > get_size(max_node)) {
+        log_error(gc_testing)("BST violation: node %ld is not smaller than upper bound %ld", size, get_size(max_node));
+        return false;
+    }
+
+
+    /* ============================================================
+     * Property 4:
+     *
+     * A red node cannot have a red child.
+     * ============================================================ */
+
+    if (is_red(node)) {
+
+        if (get_left(node) != nullptr &&
+            is_red(get_left(node))) {
+            log_error(gc_testing)("RB violation: red node %ld has red left child %ld", size, get_size(get_left(node)));
+            return false;
+        }
+
+        if (get_right(node) != nullptr &&
+            is_red(get_right(node))) {
+            log_error(gc_testing)("RB violation: red node %ld has red right child %ld", size, get_size(get_right(node)));
+            return false;
+        }
+    }
+
+
+    /* ============================================================
+     * Verify left subtree
+     *
+     * Left subtree:
+     *
+     *      min < nodes < current
+     * ============================================================ */
+
+    int left_black_height = 0;
+
+    if (!verify_node(
+            get_left(node),
+            node,
+            min_node,
+            node,
+            left_black_height)) {
+
+        return false;
+    }
+
+
+    /* ============================================================
+     * Verify right subtree
+     *
+     * Right subtree:
+     *
+     *      current < nodes < max
+     * ============================================================ */
+
+    int right_black_height = 0;
+
+    if (!verify_node(
+            get_right(node),
+            node,
+            node,
+            max_node,
+            right_black_height)) {
+
+        return false;
+    }
+
+
+    /* ============================================================
+     * Property 5:
+     *
+     * Every path from a node to a NIL leaf must contain the
+     * same number of black nodes.
+     * ============================================================ */
+
+    if (left_black_height != right_black_height) {
+        log_error(gc_testing)("RB violation: black-height mismatch at node %ld (left = %d, right = %d)", size, left_black_height, right_black_height);
+        return false;
+    }
+
+
+    /* ============================================================
+     * Calculate black height of this subtree.
+     * ============================================================ */
+
+    black_height = left_black_height;
+
+    if (is_black(node)) {
+        black_height++;
+    }
+
+    return true;
 }

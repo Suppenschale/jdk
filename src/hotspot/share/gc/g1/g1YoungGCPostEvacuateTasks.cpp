@@ -41,6 +41,7 @@
 #include "gc/g1/g1RemSet.hpp"
 #include "gc/g1/g1YoungGCPostEvacuateTasks.hpp"
 #include "gc/shared/bufferNode.hpp"
+#include "gc/shared/gcId.hpp"
 #include "gc/shared/partialArrayState.hpp"
 #include "jfr/jfrEvents.hpp"
 #include "oops/access.inline.hpp"
@@ -433,10 +434,14 @@ public:
         if (_g1h->collector_state()->mark_or_rebuild_in_progress()) {
           // If we are during the concurrent cycle, remove the holes: if in marking, following scrubbing will attempt
           // to recreate them, and during scrubbing we will otherwise do wrong things if there are already holes in it.
+          // FIXME: This may loose the interior holes if this conversion is done after that region has been scrubbed.
           _g1h->remove_old_holes(r);
           _g1h->free_humongous_region(r, nullptr, false /* add_hole_in_tail */);
         } else {
-          _g1h->free_humongous_region(r, nullptr, true /* add_hole_in_tail */);
+          if (!G1UseOldHoles) {
+            _g1h->remove_old_holes(r);
+          }
+          _g1h->free_humongous_region(r, nullptr, G1UseOldHoles /* add_hole_in_tail */);
         }
       } else {
         r->clear_both_card_tables();

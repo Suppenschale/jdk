@@ -65,6 +65,7 @@ class G1FullGCPrepareTask : public G1FullGCTask {
   G1HeapRegionClaimer _hrclaimer;
 
   void set_has_free_compaction_targets();
+  bool compaction_point_has_fully_empty_regions(G1FullGCCompactionPoint* current);
 
 public:
   G1FullGCPrepareTask(G1FullCollector* collector);

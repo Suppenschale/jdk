@@ -528,7 +528,6 @@ oop G1ParScanThreadState::do_copy_to_survivor_space(G1HeapRegionAttr const regio
   // may not be up to date for them.
   const oop forward_ptr = old->forward_to_atomic(obj, old_mark, memory_order_relaxed);
   if (forward_ptr == nullptr) {
-
     {
       const uint young_index = from_region->young_index_in_cset();
       assert((from_region->is_young() && young_index >  0) ||
@@ -632,9 +631,14 @@ void G1ParScanThreadStateSet::record_unused_optional_region(G1HeapRegion* hr) {
   }
 }
 
+void G1ParScanThreadState::clean_plab_cards(G1RemSet* rem_set) {
+  _plab_allocator->clean_plab_cards(rem_set);
+}
+
 void G1ParScanThreadState::record_evacuation_failed_region(G1HeapRegion* r, uint worker_id, bool cause_pinned) {
   if (_evac_failure_regions->record(worker_id, r->hrm_index(), cause_pinned)) {
     G1HeapRegionPrinter::evac_failure(r);
+    _g1h->remove_old_holes(r);
   }
 }
 

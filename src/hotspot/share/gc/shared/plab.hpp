@@ -142,6 +142,10 @@ public:
   HeapWord* top() const {
     return _top;
   }
+
+  HeapWord* hard_end() const {
+    return _hard_end;
+  }
 };
 
 // PLAB book-keeping.

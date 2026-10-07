@@ -33,6 +33,7 @@
 #include "gc/g1/g1HeapRegionType.hpp"
 #include "gc/g1/g1NUMA.hpp"
 #include "gc/g1/g1Policy.hpp"
+#include "gc/g1/g1RemSet.hpp"
 #include "gc/shared/tlab_globals.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "utilities/align.hpp"
@@ -42,6 +43,7 @@ G1Allocator::G1Allocator(G1CollectedHeap* heap) :
   _numa(heap->numa()),
   _survivor_is_full(false),
   _old_is_full(false),
+  _no_more_old_holes(false),
   _num_alloc_regions(_numa->num_active_nodes()),
   _mutator_alloc_regions(nullptr),
   _survivor_gc_alloc_regions(nullptr),
@@ -128,6 +130,7 @@ void G1Allocator::init_gc_alloc_regions(G1EvacInfo* evacuation_info) {
 
   _survivor_is_full = false;
   _old_is_full = false;
+  _no_more_old_holes = !(G1UseHumongousHoles || G1UseOldHoles);
 
   for (uint i = 0; i < _num_alloc_regions; i++) {
     survivor_gc_alloc_region(i)->init();
@@ -172,12 +175,20 @@ bool G1Allocator::old_is_full() const {
   return _old_is_full;
 }
 
+bool G1Allocator::no_more_old_holes() const {
+  return _no_more_old_holes;
+}
+
 void G1Allocator::set_survivor_full() {
   _survivor_is_full = true;
 }
 
 void G1Allocator::set_old_full() {
   _old_is_full = true;
+}
+
+void G1Allocator::set_no_more_old_holes() {
+  _no_more_old_holes = true;
 }
 
 size_t G1Allocator::unsafe_max_tlab_alloc() {
@@ -213,9 +224,10 @@ size_t G1Allocator::used_in_alloc_regions() {
 
 HeapWord* G1Allocator::par_allocate_during_gc(G1HeapRegionAttr dest,
                                               uint node_index,
-                                              size_t word_size) {
+                                              size_t word_size,
+                                              bool* no_more_allocation_possible) {
   size_t temp = 0;
-  HeapWord* result = par_allocate_during_gc(dest, node_index, word_size, word_size, &temp);
+  HeapWord* result = par_allocate_during_gc(dest, node_index, word_size, word_size, &temp, no_more_allocation_possible);
   // Might get a too large buffer. Just fill (be conservative) to keep parsability.
   assert(result == nullptr || temp == word_size,
          "Requested %zu words, but got %zu at " PTR_FORMAT,
@@ -227,12 +239,13 @@ HeapWord* G1Allocator::par_allocate_during_gc(G1HeapRegionAttr dest,
                                               uint node_index,
                                               size_t min_word_size,
                                               size_t desired_word_size,
-                                              size_t* actual_word_size) {
+                                              size_t* actual_word_size,
+                                              bool* no_more_allocation_possible) {
   switch (dest.type()) {
     case G1HeapRegionAttr::Young:
-      return survivor_attempt_allocation(node_index, min_word_size, desired_word_size, actual_word_size);
+      return survivor_attempt_allocation(node_index, min_word_size, desired_word_size, actual_word_size, no_more_allocation_possible);
     case G1HeapRegionAttr::Old:
-      return old_attempt_allocation(min_word_size, desired_word_size, actual_word_size);
+      return old_attempt_allocation(min_word_size, desired_word_size, actual_word_size, no_more_allocation_possible);
     default:
       ShouldNotReachHere();
       return nullptr; // Keep some compilers happy
@@ -242,7 +255,8 @@ HeapWord* G1Allocator::par_allocate_during_gc(G1HeapRegionAttr dest,
 HeapWord* G1Allocator::survivor_attempt_allocation(uint node_index,
                                                    size_t min_word_size,
                                                    size_t desired_word_size,
-                                                   size_t* actual_word_size) {
+                                                   size_t* actual_word_size,
+                                                   bool* no_more_allocation_possible) {
   assert(!_g1h->is_humongous(desired_word_size),
          "we should not be seeing humongous-size allocations in this path");
 
@@ -263,26 +277,34 @@ HeapWord* G1Allocator::survivor_attempt_allocation(uint node_index,
       }
     }
   }
+  *no_more_allocation_possible = result == nullptr && survivor_is_full();
   return result;
 }
 
 HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
                                               size_t desired_word_size,
-                                              size_t* actual_word_size) {
+                                              size_t* actual_word_size,
+                                              bool* no_more_allocation_possible) {
                                                 
   assert(!_g1h->is_humongous(desired_word_size),
          "we should not be seeing humongous-size allocations in this path");
+  *no_more_allocation_possible = false;
 
   HeapWord* result = old_gc_alloc_region()->attempt_allocation(min_word_size,
                                                                desired_word_size,
                                                                actual_word_size);
-  if (result == nullptr && !old_is_full()) { // and there are no holes left...
+  if (result == nullptr && !(no_more_old_holes() && old_is_full())) { // and there are no holes left...
     MutexLocker x(G1FreeList_lock, Mutex::_no_safepoint_check_flag);
 
-    if (G1UseHumongousHoles || G1UseOldHoles) {
+    if (!no_more_old_holes() && (G1UseHumongousHoles || G1UseOldHoles)) {
+      bool holes_exhausted;
       result = _g1h->find_old_hole(min_word_size, 
                                    desired_word_size, 
-                                   actual_word_size); 
+                                   actual_word_size,
+                                   &holes_exhausted);
+      if (holes_exhausted) {
+        set_no_more_old_holes();
+      }
     }
 
     // Multiple threads may have queued at the FreeList_lock above after checking whether there
@@ -297,6 +319,7 @@ HeapWord* G1Allocator::old_attempt_allocation(size_t min_word_size,
       }
     }
   }
+  *no_more_allocation_possible = result == nullptr && no_more_old_holes() && old_is_full();
   return result;
 }
 
@@ -379,6 +402,8 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(G1HeapRegionAttr dest,
   size_t words_remaining = alloc_buf->words_remaining();
   assert(words_remaining < word_sz, "precondition");
 
+  *plab_refill_failed = false;
+
   size_t plab_word_size = plab_size(dest.type());
   size_t next_plab_word_size = plab_word_size;
 
@@ -402,12 +427,14 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(G1HeapRegionAttr dest,
     plab_word_size = next_plab_word_size;
 
     size_t actual_plab_size = 0;
+    bool no_more_allocation_possible = false;
 
     HeapWord* buf = _allocator->par_allocate_during_gc(dest,
                                                        node_index,
                                                        required_in_plab,
                                                        plab_word_size,
-                                                       &actual_plab_size);
+                                                       &actual_plab_size,
+                                                       &no_more_allocation_possible);
 
     assert(buf == nullptr || ((actual_plab_size >= required_in_plab) && (actual_plab_size <= plab_word_size)),
            "Requested at minimum %zu, desired %zu words, but got %zu at " PTR_FORMAT,
@@ -423,15 +450,37 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(G1HeapRegionAttr dest,
       return obj;
     }
     // Otherwise.
-    *plab_refill_failed = true;
+    // FIXME: this output dependent on destination is very ugly, making the naming very confusing as it means
+    // something different for survivor/old allocation. 
+    if (dest.is_young()) {
+      *plab_refill_failed = true;
+    } else {
+      *plab_refill_failed = no_more_allocation_possible;
+    }
   }
-  // Try direct allocation.
-  HeapWord* result = _allocator->par_allocate_during_gc(dest, node_index, word_sz);
+  // Try direct allocation. For young gen allocation we should not propagate the plab_refill_failed result
+  // of direct allocation.
+  bool temp;
+  bool* local_plab_refill_failed = dest.is_young() ? &temp : plab_refill_failed;
+  HeapWord* result = _allocator->par_allocate_during_gc(dest, node_index, word_sz, local_plab_refill_failed);
   if (result != nullptr) {
     plab_data->_direct_allocated += word_sz;
     plab_data->_num_direct_allocations++;
   }
   return result;
+}
+
+void G1PLABAllocator::clean_plab_cards(G1RemSet* rem_set) {
+  PLAB* buf = _dest_data[G1HeapRegionAttr::Old]._alloc_buffer[0];
+
+  if (buf->top() == buf->hard_end()) {
+    // Not initialized yet, nothing to protect.
+    return;
+  }
+  if (!rem_set->will_be_scanned(buf->top())) {
+    return;
+  }
+  _g1h->card_table()->clear_MemRegion(MemRegion(align_down(buf->top(), CardTable::card_size()), buf->hard_end()));
 }
 
 void G1PLABAllocator::undo_allocation(G1HeapRegionAttr dest, HeapWord* obj, size_t word_sz, uint node_index) {
